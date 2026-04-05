@@ -227,24 +227,34 @@ window.addEventListener('load', function() {
 function save(){ try{ localStorage.setItem('ptp_dispatch_i',JSON.stringify(inspectors)); localStorage.setItem('ptp_dispatch_j',JSON.stringify(jobs)); }catch(e){} }
 function setStatus(msg){ document.getElementById('sbar').textContent=msg; }
 
-function geocode(addr){ return tryQ(buildQueries(addr),0); }
-function buildQueries(addr){
+var GEOAPIFY_KEY='1478499167d2489999f6b4fa8e91011b';
+function geocode(addr){
   var b=addr.trim();
-  var q=[b+', Missouri',b+', St. Louis, MO',b+', Saint Louis, MO'];
-  var s=b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim();
-  if(s!==b){q.push(s+', Missouri');q.push(s+', St. Louis, MO');}
-  var zm=b.match(/(\d+\s+[\w\s]+),?\s*(\d{5})/);
-  if(zm) q.push(zm[1]+' '+zm[2]+', Missouri');
-  return q;
+  // Build a list of queries to try in order, from most to least specific
+  var queries=[
+    b+', St. Louis, MO',
+    b+', Missouri',
+    b+', Saint Louis, MO',
+    b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim()+', St. Louis, MO',
+    b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim()+', Missouri'
+  ];
+  // Deduplicate in case stripping apt didn't change anything
+  queries=queries.filter(function(q,i){return queries.indexOf(q)===i;});
+  return tryGeoapify(queries,0);
 }
-function tryQ(queries,idx){
+function tryGeoapify(queries,idx){
   if(idx>=queries.length) return Promise.resolve(null);
-  return fetch('https://nominatim.openstreetmap.org/search?format=json&q='+encodeURIComponent(queries[idx])+'&limit=1&countrycodes=us')
+  var url='https://api.geoapify.com/v1/geocode/search?text='+encodeURIComponent(queries[idx])+'&filter=countrycode:us&bias=proximity:-90.197,38.627&limit=1&apiKey='+GEOAPIFY_KEY;
+  return fetch(url)
     .then(function(r){return r.json();})
     .then(function(d){
-      if(d&&d[0]){var p=d[0].display_name.split(',');return{lat:parseFloat(d[0].lat),lng:parseFloat(d[0].lon),display:p.slice(0,2).join(',').trim()};}
-      return tryQ(queries,idx+1);
-    }).catch(function(){return tryQ(queries,idx+1);});
+      if(d&&d.features&&d.features.length){
+        var f=d.features[0].properties;
+        var display=(f.housenumber?f.housenumber+' ':'')+f.street+', '+(f.city||f.county||'');
+        return{lat:d.features[0].geometry.coordinates[1],lng:d.features[0].geometry.coordinates[0],display:display.trim()};
+      }
+      return tryGeoapify(queries,idx+1);
+    }).catch(function(){return tryGeoapify(queries,idx+1);});
 }
 
 function hav(a,b){var R=3958.8,dL=(b.lat-a.lat)*Math.PI/180,dN=(b.lng-a.lng)*Math.PI/180,x=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dN/2)*Math.sin(dN/2);return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
