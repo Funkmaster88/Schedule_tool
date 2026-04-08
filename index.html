@@ -361,30 +361,17 @@ function runAssignment(){
       if(insp&&!insp.unavailable){job.assignedTo=insp.id;job.distFromHome=hav(insp,job);lc[insp.id]++;}
     });
 
-    // Step 2: figure out how many remaining slots and jobs we have
+    // Step 2: assign remaining jobs with spread logic
     var unassigned=wj.filter(function(j){return !j.assignedTo;});
-    var usedSlots=countTouches(lc);
-    var remainingSlots=totalSlots-usedSlots;
-
-    // Count how many "touches" each unassigned job will need if split
-    // A gas+sewer job that CAN be split counts as 2, others as 1
-    function jobSplittable(job,pool){
-      if(!job.gas||!job.sewer)return false;
-      var gp=pool.filter(function(i){return i.gas&&i.id!==job.excludedId;});
-      var sp=pool.filter(function(i){return i.sewer&&i.id!==job.excludedId;});
-      var bg=pickBest(gp,job,lc),bs=pickBest(sp,job,lc);
-      return !!(bg&&bs&&bg.id!==bs.id);
-    }
-
-    // Decide split strategy: if we have more slots than jobs, try to spread
-    var doSpread=(remainingSlots>unassigned.length);
 
     unassigned.forEach(function(job){
       var pool=avail.filter(function(i){return i.id!==job.excludedId;});
       if(!pool.length) pool=inspectors.filter(function(i){return i.id!==job.excludedId;});
 
-      // Try split if: spreading is desired AND job has gas+sewer AND slots allow
-      var trySplit=doSpread && job.gas && job.sewer && pool.length>=2;
+      // Recalculate idle inspectors right now (zero touches so far this window)
+      var idleCount=avail.filter(function(i){return lc[i.id]===0;}).length;
+      // Split if: there are still idle inspectors, job has gas+sewer, and pool has 2+ people
+      var trySplit=idleCount>0 && job.gas && job.sewer && pool.length>=2;
       if(trySplit){
         var gp=pool.filter(function(i){return i.gas;}),sp=pool.filter(function(i){return i.sewer;});
         var bg=pickBest(gp,job,lc),bs=pickBest(sp,job,lc);

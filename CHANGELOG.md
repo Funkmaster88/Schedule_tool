@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.4.0] — 2026-04-07
+
+### Fixed
+- **Critical: Stone (4th inspector) not appearing on schedule** — spread logic was calculating idle inspector count once upfront before any jobs were processed, causing it to go stale mid-loop. After the first Gas+Sewer split consumed two inspector slots, subsequent jobs no longer saw accurate idle counts and skipped further splits
+- Spread decision now recalculates per-job in real time — each job checks how many inspectors currently have zero touches before deciding whether to split
+- Scenario that now works correctly: 4 inspectors, 3 AM Gas+Sewer jobs (1 requested) → all 4 inspectors receive an assignment via two splits
+
+---
+
 ## [1.3.0] — 2026-04-07
 
 ### Added
