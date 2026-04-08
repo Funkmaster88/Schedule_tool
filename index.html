@@ -413,7 +413,7 @@ function fmtMins(m){
   return h>0?(h+'h'+(r>0?' '+r+'m':'')):(r+'m');
 }
 // Drive speed assumption: 25 mph average in STL metro
-var DRIVE_MPH=25;
+var DRIVE_MPH=45;
 function driveMins(distMi){ return Math.round(distMi/DRIVE_MPH*60); }
 
 // Radon and Mold run concurrently — take the max, not the sum

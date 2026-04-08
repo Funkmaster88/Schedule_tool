@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.4.2] — 2026-04-07
+
+### Changed
+- Drive speed estimate updated from 25 mph to **45 mph** to better reflect suburban/rural STL region coverage
+
+---
+
 ## [1.4.1] — 2026-04-07
 
 ### Fixed
