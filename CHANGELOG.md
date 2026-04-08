@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.7.3] — 2026-04-07
+
+### Changed
+- **Global proximity optimization** — the assignment engine now considers all jobs and all inspectors together before making any assignments, rather than processing jobs in the order they were entered. All possible inspector-job pairs are ranked by distance (closest first) and assigned greedily from that ranked list. This ensures the closest available inspector gets each job regardless of input order, preventing situations like an inspector getting a house 27 miles away when a closer inspector was available
+
+---
+
 ## [1.7.2] — 2026-04-07
 
 ### Changed
