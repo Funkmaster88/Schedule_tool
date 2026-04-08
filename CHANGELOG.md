@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.7.2] — 2026-04-07
+
+### Changed
+- **Smarter split logic — only split when necessary** — the algorithm now calculates exactly how many splits are needed to cover idle inspectors and stops there. Previously it split aggressively whenever anyone was idle, causing over-splitting
+- 3 Gas+Sewer jobs with 3 inspectors → each inspector gets one full house, no splits
+- 3 Gas+Sewer jobs with 4 inspectors → exactly 1 job is split to cover the 4th inspector, the other 2 go as full houses
+- Splits only fire when two idle inspectors are available (one for gas, one for sewer), preventing any inspector from doubling up
+
+---
+
+## [1.7.1] — 2026-04-07
+
+### Fixed
+- **Stephen doubling up on AM jobs** — sewer partner selection was falling back to already-assigned inspectors when no idle sewer candidate existed, causing one inspector to receive both a primary gas job and a sewer add-on. Sewer partner now strictly requires no prior primary assignment and never falls back to the broader pool, ensuring the split only happens when a truly idle sewer-certified inspector is available
+
+---
+
 ## [1.7.0] — 2026-04-07
 
 ### Changed

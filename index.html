@@ -478,33 +478,39 @@ function runAssignment(){
       job.assignedTo=best.id;job.distFromHome=hav(best,job);lc[best.id]++;pc[best.id]++;
     });
 
-    // Step 2: assign remaining jobs — split Gas+Sewer when idle inspectors exist
+    // Step 2: assign remaining jobs
     var unassigned=wj.filter(function(j){return !j.assignedTo;});
+    var availCount=avail.length;
+    var usedPrimary=Object.keys(pc).reduce(function(s,k){return s+(pc[k]>0?1:0);},0);
+    // How many inspectors still need a job after requested assignments
+    var idleCount=availCount-usedPrimary;
+    // How many splits we need: only split if jobs < available inspectors
+    // Each split converts 1 job into 2 touches, covering 1 extra idle inspector
+    var splitsNeeded=Math.max(0, idleCount-unassigned.length);
+    var splitsUsed=0;
 
     unassigned.forEach(function(job){
       var excIds=job.excludedIds||[];
       var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
       if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
 
-      // Inspectors with no primary job yet in this window
-      var noPrimary=avail.filter(function(i){return pc[i.id]===0&&excIds.indexOf(i.id)<0;});
-      var trySplit=noPrimary.length>0 && job.gas && job.sewer && pool.length>=2;
+      // Only split if: we still need more splits, job has gas+sewer, and an idle sewer partner exists
+      var idleSewer=pool.filter(function(i){return i.sewer&&pc[i.id]===0;});
+      var idleGas=pool.filter(function(i){return i.gas&&pc[i.id]===0;});
+      var trySplit=splitsUsed<splitsNeeded && job.gas && job.sewer && idleGas.length>0 && idleSewer.length>1;
+      // idleSewer.length>1 because we need at least 2 idle people (one for gas, one for sewer)
 
       if(trySplit){
-        var gp=pool.filter(function(i){return i.gas;});
-        // Prefer inspectors with no primary job for gas pick
-        var noPriGas=gp.filter(function(i){return pc[i.id]===0;});
-        var bg=pickBest(noPriGas.length?noPriGas:gp, job, lc);
+        var bg=pickBest(idleGas, job, lc);
         if(bg){
-          // For sewer: must differ from gas pick, prefer inspectors with no primary job
-          var sp=pool.filter(function(i){return i.sewer&&i.id!==bg.id;});
-          var noPriSew=sp.filter(function(i){return pc[i.id]===0;});
-          var bs=pickBest(noPriSew.length?noPriSew:sp, job, lc);
+          var sewPool=pool.filter(function(i){return i.sewer&&i.id!==bg.id&&pc[i.id]===0;});
+          var bs=pickBest(sewPool, job, lc);
           if(bs){
             job.assignedTo=bg.id;job.distFromHome=hav(bg,job);
             job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);
             lc[bg.id]++;pc[bg.id]++;
-            lc[bs.id]++;pc[bs.id]++; // sewer split counts as their primary for spread purposes
+            lc[bs.id]++;pc[bs.id]++;
+            splitsUsed++;
             return;
           }
         }
