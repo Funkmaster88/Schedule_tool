@@ -99,6 +99,10 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 .drop-label { font-size:11px; color:#888; margin-bottom:3px; margin-top:2px; }
 .map-wrap { position:relative; }
 #map { position:absolute; inset:0; }
+.est-badge { display:inline-flex; align-items:center; gap:3px; font-size:10px; font-weight:600; padding:2px 7px; border-radius:99px; background:#f0f0f0; color:#555; border:1px solid #ddd; margin-top:3px; }
+.est-badge.svc  { background:#f5f0ff; color:#5b21b6; border-color:#c4b5fd; }
+.est-badge.total{ background:#e0f2fe; color:#0369a1; border-color:#7dd3fc; }
+.insp-total { font-size:11px; color:#555; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; padding:3px 8px; margin-left:4px; }
 </style>
 </head>
 <body>
@@ -193,6 +197,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 const COLORS = ['#1D9E75','#D85A30','#378ADD','#D4537E','#BA7517','#534AB7','#639922','#A32D2D'];
 const SVC = ['gas','sewer','radon','mold'];
 const SVC_CLS = {gas:'g',sewer:'sw',radon:'r',mold:'m'};
+const SVC_MINS = {gas:45, sewer:60, radon:10, mold:15};
 const STL = [38.627, -90.197];
 let map, inspectors=[], jobs=[], layers=[];
 let curWin='AM', editIId=null, editJId=null;
@@ -336,27 +341,62 @@ function manualOverride(jobId){
   save();renderAll();setStatus('Assignment updated manually.');
 }
 
+function countTouches(lc){ return Object.keys(lc).reduce(function(s,k){return s+lc[k];},0); }
+
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
   jobs.forEach(function(j){j.assignedTo=null;j.distFromHome=null;j.certConflict=false;j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;});
+
   ['AM','PM'].forEach(function(win){
     var wj=jobs.filter(function(j){return j.window===win;});
     var lc={};inspectors.forEach(function(i){lc[i.id]=0;});
     var avail=inspectors.filter(function(i){return !i.unavailable;});
+    var totalSlots=avail.length; // how many inspector-touches we have available
+
+    // Step 1: honour requested assignments first
     wj.forEach(function(job){
       if(!job.requestedId)return;
       var insp=inspectors.find(function(i){return i.id===job.requestedId;});
       if(insp&&!insp.unavailable){job.assignedTo=insp.id;job.distFromHome=hav(insp,job);lc[insp.id]++;}
     });
-    wj.filter(function(j){return !j.assignedTo;}).forEach(function(job){
+
+    // Step 2: figure out how many remaining slots and jobs we have
+    var unassigned=wj.filter(function(j){return !j.assignedTo;});
+    var usedSlots=countTouches(lc);
+    var remainingSlots=totalSlots-usedSlots;
+
+    // Count how many "touches" each unassigned job will need if split
+    // A gas+sewer job that CAN be split counts as 2, others as 1
+    function jobSplittable(job,pool){
+      if(!job.gas||!job.sewer)return false;
+      var gp=pool.filter(function(i){return i.gas&&i.id!==job.excludedId;});
+      var sp=pool.filter(function(i){return i.sewer&&i.id!==job.excludedId;});
+      var bg=pickBest(gp,job,lc),bs=pickBest(sp,job,lc);
+      return !!(bg&&bs&&bg.id!==bs.id);
+    }
+
+    // Decide split strategy: if we have more slots than jobs, try to spread
+    var doSpread=(remainingSlots>unassigned.length);
+
+    unassigned.forEach(function(job){
       var pool=avail.filter(function(i){return i.id!==job.excludedId;});
       if(!pool.length) pool=inspectors.filter(function(i){return i.id!==job.excludedId;});
-      if(job.gas&&job.sewer&&pool.length>=2){
+
+      // Try split if: spreading is desired AND job has gas+sewer AND slots allow
+      var trySplit=doSpread && job.gas && job.sewer && pool.length>=2;
+      if(trySplit){
         var gp=pool.filter(function(i){return i.gas;}),sp=pool.filter(function(i){return i.sewer;});
         var bg=pickBest(gp,job,lc),bs=pickBest(sp,job,lc);
-        if(bg&&bs&&bg.id!==bs.id){job.assignedTo=bg.id;job.distFromHome=hav(bg,job);job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);lc[bg.id]++;lc[bs.id]++;return;}
+        if(bg&&bs&&bg.id!==bs.id){
+          job.assignedTo=bg.id;job.distFromHome=hav(bg,job);
+          job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);
+          lc[bg.id]++;lc[bs.id]++;
+          return;
+        }
       }
+
+      // Standard single assignment
       var el=pool.filter(function(i){return certOk(i,job);});
       if(!el.length){el=pool.slice();if(el.length)job.certConflict=true;}
       if(!el.length){el=inspectors.filter(function(i){return certOk(i,job);});job.certConflict=true;}
@@ -365,9 +405,71 @@ function runAssignment(){
       if(w){job.assignedTo=w.id;job.distFromHome=hav(w,job);lc[w.id]++;}
     });
   });
+
   save();renderAll();switchTab('results');buildExport();
   var c=jobs.filter(function(j){return j.certConflict;}).length,sp=jobs.filter(function(j){return j.splitAssignedTo;}).length;
   setStatus('Assigned '+jobs.filter(function(j){return j.assignedTo;}).length+' job(s)'+(sp?' · '+sp+' split':'')+(c?' · '+c+' conflict(s)':'')+'.');
+}
+
+// ── Timer functions ──────────────────────────────────────────────
+// ── Time estimation helpers ──────────────────────────────────────
+function fmtMins(m){
+  if(!m)return'0m';
+  var h=Math.floor(m/60),r=m%60;
+  return h>0?(h+'h'+(r>0?' '+r+'m':'')):(r+'m');
+}
+// Drive speed assumption: 25 mph average in STL metro
+var DRIVE_MPH=25;
+function driveMins(distMi){ return Math.round(distMi/DRIVE_MPH*60); }
+
+// Radon and Mold run concurrently — take the max, not the sum
+function calcSvcMins(hasGas, hasSewer, hasRadon, hasMold, excludeSvc){
+  var total=0;
+  if(hasGas  && excludeSvc!=='gas')   total+=SVC_MINS.gas;
+  if(hasSewer&& excludeSvc!=='sewer') total+=SVC_MINS.sewer;
+  // Radon and Mold are concurrent — use whichever is longer
+  var radMold=0;
+  if(hasRadon && excludeSvc!=='radon') radMold=Math.max(radMold,SVC_MINS.radon);
+  if(hasMold  && excludeSvc!=='mold')  radMold=Math.max(radMold,SVC_MINS.mold);
+  total+=radMold;
+  return total;
+}
+
+// Job service time for the main assigned inspector (excludes split service)
+function jobSvcMins(job){
+  return calcSvcMins(job.gas,job.sewer,job.radon,job.mold,job.splitService);
+}
+// Job service time for the split inspector (sewer only)
+function splitSvcMins(job){
+  return job.splitService==='sewer'?SVC_MINS.sewer:0;
+}
+
+// Per-job est badge shown on Jobs tab (all services, no drive)
+function jobEstBadge(job){
+  var mins=calcSvcMins(job.gas,job.sewer,job.radon,job.mold,null);
+  if(!mins)return'';
+  return'<span class="est-badge svc">⏱ '+fmtMins(mins)+'</span>';
+}
+
+// Per-inspector total: job svc time + drive from home to each job (haversine)
+function inspectorEstMins(insp,myJobs,mySplitJobs){
+  var total=0;
+  // Drive from home to first job (assume sorted by window, then proximity — rough)
+  var allJobs=myJobs.concat(mySplitJobs);
+  if(!allJobs.length)return 0;
+  // Drive: home → first job
+  var firstDist=hav(insp,allJobs[0]);
+  total+=driveMins(firstDist);
+  // Between subsequent jobs
+  for(var i=1;i<allJobs.length;i++){
+    total+=driveMins(hav(allJobs[i-1],allJobs[i]));
+  }
+  // Drive back home from last job
+  total+=driveMins(hav(allJobs[allJobs.length-1],insp));
+  // Service time
+  myJobs.forEach(function(j){total+=jobSvcMins(j);});
+  mySplitJobs.forEach(function(j){total+=splitSvcMins(j);});
+  return total;
 }
 
 function touchCount(i){return jobs.filter(function(j){return j.assignedTo===i.id||j.splitAssignedTo===i.id;}).length;}
@@ -415,7 +517,8 @@ function renderJobList(){
     var rt=req?'<span class="tag t-req">Req: '+req.name+'</span>':'';
     var et=exc?'<span class="tag t-exc">Not: '+exc.name+'</span>':'';
     var at=insp?'<span style="color:'+insp.color+';font-weight:600">'+insp.name+'</span>':'<span class="tag t-warn">unassigned</span>';
-    return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+j.display+'</div>'+(j.notes?'<div class="jnote">'+j.notes+'</div>':'')+'<div class="jmeta">'+wt+st+rt+et+at+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')" title="Edit">✎</button><button class="bicon red" onclick="removeJob('+j.id+')" title="Remove">×</button></div>';
+    var eb=jobEstBadge(j);
+    return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+j.display+'</div>'+(j.notes?'<div class="jnote">'+j.notes+'</div>':'')+'<div class="jmeta">'+wt+st+rt+et+at+(eb?eb:'')+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')" title="Edit">✎</button><button class="bicon red" onclick="removeJob('+j.id+')" title="Remove">×</button></div>';
   }).join('');
 }
 
@@ -438,18 +541,21 @@ function renderResults(){
       if(!myJ.length&&!mySp.length)return;
       var certs=SVC.filter(function(s){return insp[s];}).map(function(s){return'<span class="tag t-'+s+'">'+s.charAt(0).toUpperCase()+s.slice(1)+'</span>';}).join('');
       var total=myJ.length+mySp.length;
-      html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap"><div style="width:8px;height:8px;border-radius:50%;background:'+insp.color+';flex-shrink:0"></div><span style="font-size:13px;font-weight:600;color:#111">'+insp.name+'</span><span style="font-size:11px;color:#888">'+total+' job'+(total>1?'s':'')+'</span>'+certs+'</div><div style="padding-left:14px">';
+      var estMins=inspectorEstMins(insp,myJ,mySp);
+      var estLabel=estMins?'<span class="insp-total">⏱ ~'+fmtMins(estMins)+'</span>':'';
+      html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap"><div style="width:8px;height:8px;border-radius:50%;background:'+insp.color+';flex-shrink:0"></div><span style="font-size:13px;font-weight:600;color:#111">'+insp.name+'</span><span style="font-size:11px;color:#888">'+total+' job'+(total>1?'s':'')+'</span>'+certs+estLabel+'</div><div style="padding-left:14px">';
       myJ.forEach(function(j,idx){
         var si=j.splitAssignedTo?inspectors.find(function(i){return i.id===j.splitAssignedTo;}):null;
         var st=svcTags(j,j.splitService);
         var excI=j.excludedId?inspectors.find(function(i){return i.id===j.excludedId;}):null;
         var ex=(j.requestedId?'<span class="tag t-req">Requested</span>':'')+(excI?'<span class="tag t-exc">Not: '+excI.name+'</span>':'')+(j.certConflict?'<span class="tag t-bad">Cert conflict</span>':'')+(si?'<span class="tag t-split">Split w/ '+si.name+'</span>':'');
         var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.assignedTo===i.id?' selected':'')+'>'+i.name+(i.unavailable?' ⊘':'')+'</option>';}).join('');
-        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+(idx+1)+'.</span><div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+'</div>'+(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')+(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')+'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div></div></div></div>';
+        var timerHtml=jobSvcMins(j)?'<span class="est-badge svc">⏱ '+fmtMins(jobSvcMins(j))+'</span>':'';
+        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+(idx+1)+'.</span><div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+(timerHtml||'')+'</div>'+(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')+(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')+'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div></div></div></div>';
       });
       if(mySp.length){
         html+='<div style="padding:4px 0 2px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.05em">Sewer add-ons</div>';
-        mySp.forEach(function(j){var mi=inspectors.find(function(i){return i.id===j.assignedTo;});html+='<div style="padding:4px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;padding-top:1px">+</span><div style="flex:1;min-width:0"><div style="font-size:12px;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="tag t-split">Split w/ '+(mi?mi.name:'?')+'</span></div>'+(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')+'</div></div></div>';});
+        mySp.forEach(function(j){var mi=inspectors.find(function(i){return i.id===j.assignedTo;});var splitEst=splitSvcMins(j)?'<span class="est-badge svc">⏱ '+fmtMins(splitSvcMins(j))+'</span>':'';html+='<div style="padding:4px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;padding-top:1px">+</span><div style="flex:1;min-width:0"><div style="font-size:12px;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="tag t-split">Split w/ '+(mi?mi.name:'?')+'</span>'+(splitEst||'')+'</div>'+(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')+'</div></div></div>';});
       }
       html+='</div></div>';
     });
