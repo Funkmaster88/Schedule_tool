@@ -457,8 +457,6 @@ function manualOverride(jobId){
   save();renderAll();setStatus('Assignment updated manually.');
 }
 
-function countTouches(lc){ return Object.keys(lc).reduce(function(s,k){return s+lc[k];},0); }
-
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
@@ -466,20 +464,21 @@ function runAssignment(){
 
   ['AM','PM'].forEach(function(win){
     var wj=jobs.filter(function(j){return j.window===win;});
-    var lc={};inspectors.forEach(function(i){lc[i.id]=0;});
+    // lc = total touches (primary + split), pc = primary job count only
+    var lc={},pc={};
+    inspectors.forEach(function(i){lc[i.id]=0;pc[i.id]=0;});
     var avail=inspectors.filter(function(i){return !i.unavailable;});
-    var totalSlots=avail.length; // how many inspector-touches we have available
 
-    // Step 1: honour requested assignments first — pick lightest load among requested
+    // Step 1: honour requested assignments first
     wj.forEach(function(job){
       if(!job.requestedIds||!job.requestedIds.length)return;
       var candidates=job.requestedIds.map(function(id){return inspectors.find(function(i){return i.id===id&&!i.unavailable;});}).filter(Boolean);
       if(!candidates.length)return;
       var best=candidates.slice().sort(function(a,b){return(lc[a.id]||0)-(lc[b.id]||0);})[0];
-      job.assignedTo=best.id;job.distFromHome=hav(best,job);lc[best.id]++;
+      job.assignedTo=best.id;job.distFromHome=hav(best,job);lc[best.id]++;pc[best.id]++;
     });
 
-    // Step 2: assign remaining jobs with spread logic
+    // Step 2: assign remaining jobs — split Gas+Sewer when idle inspectors exist
     var unassigned=wj.filter(function(j){return !j.assignedTo;});
 
     unassigned.forEach(function(job){
@@ -487,23 +486,25 @@ function runAssignment(){
       var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
       if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
 
-      // Recalculate idle inspectors right now (zero touches so far this window)
-      var idle=avail.filter(function(i){return lc[i.id]===0&&excIds.indexOf(i.id)<0;});
-      var trySplit=idle.length>0 && job.gas && job.sewer && pool.length>=2;
+      // Inspectors with no primary job yet in this window
+      var noPrimary=avail.filter(function(i){return pc[i.id]===0&&excIds.indexOf(i.id)<0;});
+      var trySplit=noPrimary.length>0 && job.gas && job.sewer && pool.length>=2;
+
       if(trySplit){
         var gp=pool.filter(function(i){return i.gas;});
-        // Pick gas inspector — prefer idle first
-        var idleGas=gp.filter(function(i){return lc[i.id]===0;});
-        var bg=pickBest(idleGas.length?idleGas:gp, job, lc);
-        // Pick sewer inspector — must be different from gas pick, prefer idle
+        // Prefer inspectors with no primary job for gas pick
+        var noPriGas=gp.filter(function(i){return pc[i.id]===0;});
+        var bg=pickBest(noPriGas.length?noPriGas:gp, job, lc);
         if(bg){
+          // For sewer: must differ from gas pick, prefer inspectors with no primary job
           var sp=pool.filter(function(i){return i.sewer&&i.id!==bg.id;});
-          var idleSew=sp.filter(function(i){return lc[i.id]===0;});
-          var bs=pickBest(idleSew.length?idleSew:sp, job, lc);
+          var noPriSew=sp.filter(function(i){return pc[i.id]===0;});
+          var bs=pickBest(noPriSew.length?noPriSew:sp, job, lc);
           if(bs){
             job.assignedTo=bg.id;job.distFromHome=hav(bg,job);
             job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);
-            lc[bg.id]++;lc[bs.id]++;
+            lc[bg.id]++;pc[bg.id]++;
+            lc[bs.id]++;pc[bs.id]++; // sewer split counts as their primary for spread purposes
             return;
           }
         }
@@ -515,7 +516,7 @@ function runAssignment(){
       if(!el.length){el=inspectors.filter(function(i){return certOk(i,job);});job.certConflict=true;}
       if(!el.length){el=inspectors.slice();job.certConflict=true;}
       var w=pickBest(el,job,lc);
-      if(w){job.assignedTo=w.id;job.distFromHome=hav(w,job);lc[w.id]++;}
+      if(w){job.assignedTo=w.id;job.distFromHome=hav(w,job);lc[w.id]++;pc[w.id]++;}
     });
   });
 
@@ -667,32 +668,40 @@ function renderResults(){
   var counts=inspectors.map(touchCount),active=counts.filter(function(c){return c>0;});
   var mn=active.length?Math.min.apply(null,active):0,mx=active.length?Math.max.apply(null,active):0,sp=mx-mn;
   sa.innerHTML='<div class="sgrid"><div class="scard"><div class="sval">'+assigned.length+'</div><div class="slbl">Total jobs</div></div><div class="scard"><div class="sval">'+inspectors.filter(function(_,i){return counts[i]>0;}).length+'</div><div class="slbl">Active</div></div><div class="scard"><div class="sval">'+mn+'–'+mx+'</div><div class="slbl">Per inspector</div></div><div class="scard"><div class="sval" style="color:'+(sp<=1?'#0F6E56':sp<=2?'#d97706':'#b91c1c')+'">'+(sp<=1?'Even':sp<=2?'Close':'Uneven')+'</div><div class="slbl">Balance</div></div></div>';
-  var html='';
+  // Show office waypoint banner if set
+  var offBanner=office?'<div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:6px 10px;font-size:11px;color:#854F0B;margin-bottom:8px;">📍 Midday waypoint: '+office.display+'</div>':'';
+  var html=offBanner;
   ['AM','PM'].forEach(function(win){
     var wj=jobs.filter(function(j){return j.window===win&&j.assignedTo;});
     if(!wj.length)return;
     html+='<div class="whead"><span class="tag t-'+win.toLowerCase()+'">'+win+' · '+(win==='AM'?'9–12':'2–5')+'</span></div>';
     inspectors.forEach(function(insp){
-      var myJ=wj.filter(function(j){return j.assignedTo===insp.id;}),mySp=wj.filter(function(j){return j.splitAssignedTo===insp.id;});
+      var myJ=wj.filter(function(j){return j.assignedTo===insp.id;});
+      var mySp=wj.filter(function(j){return j.splitAssignedTo===insp.id;});
       if(!myJ.length&&!mySp.length)return;
       var certs=SVC.filter(function(s){return insp[s];}).map(function(s){return'<span class="tag t-'+s+'">'+s.charAt(0).toUpperCase()+s.slice(1)+'</span>';}).join('');
       var total=myJ.length+mySp.length;
       var estMins=inspectorEstMins(insp,myJ,mySp);
       var estLabel=estMins?'<span class="insp-total">⏱ ~'+fmtMins(estMins)+'</span>':'';
       html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap"><div style="width:8px;height:8px;border-radius:50%;background:'+insp.color+';flex-shrink:0"></div><span style="font-size:13px;font-weight:600;color:#111">'+insp.name+'</span><span style="font-size:11px;color:#888">'+total+' job'+(total>1?'s':'')+'</span>'+certs+estLabel+'</div><div style="padding-left:14px">';
-      myJ.forEach(function(j,idx){
-        var si=j.splitAssignedTo?inspectors.find(function(i){return i.id===j.splitAssignedTo;}):null;
+      var jobNum=0;
+      // Primary jobs — no split language
+      myJ.forEach(function(j){
+        jobNum++;
         var st=svcTags(j,j.splitService);
         var excI=(j.excludedIds||[]).map(function(id){return inspectors.find(function(i){return i.id===id;});}).filter(Boolean);
-        var ex=((j.requestedIds&&j.requestedIds.length)?'<span class="tag t-req">Requested</span>':'')+excI.map(function(i){return'<span class="tag t-exc">Not: '+i.name+'</span>';}).join('')+(j.certConflict?'<span class="tag t-bad">Cert conflict</span>':'')+(si?'<span class="tag t-split">Split w/ '+si.name+'</span>':'');
+        var ex=((j.requestedIds&&j.requestedIds.length)?'<span class="tag t-req">Requested</span>':'')+excI.map(function(i){return'<span class="tag t-exc">Not: '+i.name+'</span>';}).join('')+(j.certConflict?'<span class="tag t-bad">Cert conflict</span>':'');
         var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.assignedTo===i.id?' selected':'')+'>'+i.name+(i.unavailable?' ⊘':'')+'</option>';}).join('');
         var timerHtml=jobSvcMins(j)?'<span class="est-badge svc">⏱ '+fmtMins(jobSvcMins(j))+'</span>':'';
-        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+(idx+1)+'.</span><div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+(timerHtml||'')+'</div>'+(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')+(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')+'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div></div></div></div>';
+        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span><div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+(timerHtml||'')+'</div>'+(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')+(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')+'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div></div></div></div>';
       });
-      if(mySp.length){
-        html+='<div style="padding:4px 0 2px;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.05em">Sewer add-ons</div>';
-        mySp.forEach(function(j){var mi=inspectors.find(function(i){return i.id===j.assignedTo;});var splitEst=splitSvcMins(j)?'<span class="est-badge svc">⏱ '+fmtMins(splitSvcMins(j))+'</span>':'';html+='<div style="padding:4px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;padding-top:1px">+</span><div style="flex:1;min-width:0"><div style="font-size:12px;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="tag t-split">Split w/ '+(mi?mi.name:'?')+'</span>'+(splitEst||'')+'</div>'+(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')+'</div></div></div>';});
-      }
+      // Sewer split jobs — shown as standalone sewer job, no split mention
+      mySp.forEach(function(j){
+        jobNum++;
+        var sewEst='<span class="est-badge svc">⏱ '+fmtMins(SVC_MINS.sewer)+'</span>';
+        var distLbl=j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'';
+        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start"><span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span><div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span>'+sewEst+'</div>'+(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')+distLbl+'</div></div></div>';
+      });
       html+='</div></div>';
     });
   });
@@ -704,18 +713,40 @@ function buildExport(){
   if(!assigned.length){document.getElementById('exp-box').textContent='No assignments yet.';return;}
   var date=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}),line=Array(37).join('─');
   var out='PILLAR TO POST — SCHEDULE\n'+date+'\n'+line+'\n';
-  ['AM','PM'].forEach(function(win){
+
+  ['AM','PM'].forEach(function(win,wi){
     var wj=jobs.filter(function(j){return j.window===win&&j.assignedTo;});
     if(!wj.length)return;
+
+    // Insert office waypoint between AM and PM
+    if(wi===1&&office){
+      var hasPrev=jobs.some(function(j){return j.window==='AM'&&j.assignedTo;});
+      if(hasPrev) out+='\n── Midday: '+office.display+' ──\n';
+    }
+
     out+='\n'+win+' WINDOW  ('+(win==='AM'?'9:00 AM – 12:00 PM':'2:00 PM – 5:00 PM')+')\n'+line+'\n';
     inspectors.forEach(function(insp){
-      var myJ=wj.filter(function(j){return j.assignedTo===insp.id;}),mySp=wj.filter(function(j){return j.splitAssignedTo===insp.id;});
-      if(!myJ.length&&!mySp.length)return;
+      // Build this inspector's job list: primary jobs + sewer split jobs shown as standalone
+      var lines=[];
+      // Primary jobs
+      wj.filter(function(j){return j.assignedTo===insp.id;}).forEach(function(j){
+        var svcs=SVC.filter(function(s){return j[s]&&s!==j.splitService;}).map(function(s){return s.toUpperCase();}).join('+');
+        var line='  '+j.display+(svcs?' ['+svcs+']':'')+(j.certConflict?' ⚠ CERT CONFLICT':'');
+        if(j.notes) line+='\n     Notes: '+j.notes;
+        lines.push(line);
+      });
+      // Sewer split jobs — show as standalone sewer job, no split mention
+      wj.filter(function(j){return j.splitAssignedTo===insp.id;}).forEach(function(j){
+        var line='  '+j.display+' [SEWER]';
+        if(j.notes) line+='\n     Notes: '+j.notes;
+        lines.push(line);
+      });
+      if(!lines.length)return;
       out+='\n'+insp.name+(insp.unavailable?' [UNAVAILABLE]':'')+'\n';
-      myJ.forEach(function(j,i){var svcs=SVC.filter(function(s){return j[s]&&s!==j.splitService;}).map(function(s){return s.toUpperCase();}).join('+');var si=j.splitAssignedTo?inspectors.find(function(x){return x.id===j.splitAssignedTo;}):null;out+='  '+(i+1)+'. '+j.display+(svcs?' ['+svcs+']':'')+(j.certConflict?' ⚠ CERT CONFLICT':'')+(si?' (sewer → '+si.name+')'  :'')+'\n';if(j.notes)out+='     Notes: '+j.notes+'\n';});
-      if(mySp.length){out+='  + Sewer add-ons:\n';mySp.forEach(function(j){var mi=inspectors.find(function(i){return i.id===j.assignedTo;});out+='    • '+j.display+' (w/ '+(mi?mi.name:'?')+')\n';if(j.notes)out+='      Notes: '+j.notes+'\n';});}
+      lines.forEach(function(l,i){out+='  '+(i+1)+'. '+l.trimLeft()+'\n';});
     });
   });
+
   var avail=inspectors.filter(function(i){return !i.unavailable;}).length;
   out+='\n'+line+'\nTotal: '+assigned.length+' inspection'+(assigned.length!==1?'s':'')+' · '+avail+' inspector'+(avail!==1?'s':'');
   document.getElementById('exp-box').textContent=out;

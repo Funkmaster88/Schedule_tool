@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.7.0] — 2026-04-07
+
+### Changed
+- **Split assignments are now silent** — when a Gas+Sewer job is split across two inspectors, each inspector sees it as their own standalone job with no "split w/" language, no sewer add-on sections, and no cross-references. Gas inspector sees [GAS], sewer inspector sees [SEWER], clean and simple
+- **Office waypoint now visible in export** — a "── Midday: [address] ──" line appears between the AM and PM windows in the exported schedule when an office is set
+- **Office waypoint now visible in Assignments tab** — a gold banner shows the midday waypoint address at the top of the assignments list when an office is set
+- **Split assignment bug fixed** — rewrote spread logic to track primary job count separately from total touches; an inspector who already received a sewer split now counts as having a primary job and won't be used as a sewer add-on on a second job, preventing the circular cross-reference issue
+
+---
+
 ## [1.6.1] — 2026-04-07
 
 ### Fixed
