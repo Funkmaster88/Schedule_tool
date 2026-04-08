@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.5.0] — 2026-04-07
+
+### Added
+- **Multi-select requested inspectors** — jobs can now have multiple requested inspectors; auto-assign picks whichever has the lightest load at assignment time
+- **Multi-select excluded inspectors** — jobs can now exclude multiple inspectors; selecting a person as requested automatically removes them from excluded and vice versa
+- **Office / Midday Waypoint** — new section at the top of the Inspectors tab to set a shared office address
+  - Office appears on the map as a distinct brown square pin 🏢
+  - Drive time estimates now route inspectors through the office between AM and PM windows (home → AM jobs → office → PM jobs → home)
+  - Office persists in localStorage between sessions
+  - Clearable with the × button
+
+### Changed
+- Request/exclusion UI replaced from single dropdowns to pill-style multi-tap selectors (blue = requested, red = excluded)
+- Backwards compatible — existing jobs with single `requestedId`/`excludedId` values are automatically migrated to the new array format on load
+
+---
+
 ## [1.4.2] — 2026-04-07
 
 ### Changed
