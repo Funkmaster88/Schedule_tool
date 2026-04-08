@@ -197,6 +197,16 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
           <div class="exp-box" id="exp-box">Run auto-assign first.</div>
           <button class="btn dark" id="copy-btn">Copy to clipboard</button>
         </div>
+        <div class="section">
+          <div class="sec-title">Transfer settings</div>
+          <p style="font-size:11px;color:#888;margin-bottom:8px">Export your inspector roster, office, and jobs as a code you can paste on another device.</p>
+          <button class="btn dark" onclick="exportSettings()">Export settings to clipboard</button>
+          <div style="margin-top:10px">
+            <div class="drop-label">Import settings — paste code below</div>
+            <textarea id="import-box" placeholder="Paste settings code here…" style="font-family:monospace;font-size:11px;min-height:70px"></textarea>
+            <button class="btn" style="color:#0F6E56;border-color:#0F6E56" onclick="importSettings()">Import settings</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -609,12 +619,16 @@ function renderInspList(){
 }
 
 function updateDrops(){
-  var req=document.getElementById('f-jreq'),rc=req.value;
-  req.innerHTML='<option value="">No preference</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(i.unavailable?' disabled':'')+'>'+i.name+(i.unavailable?' (away)':'')+'</option>';}).join('');
-  req.value=rc&&inspectors.find(function(i){return i.id===+rc;})?rc:'';
-  var exc=document.getElementById('f-jexc'),ec=exc.value;
-  exc.innerHTML='<option value="">No exclusion</option>'+inspectors.map(function(i){return'<option value="'+i.id+'">'+i.name+'</option>';}).join('');
-  exc.value=ec&&inspectors.find(function(i){return i.id===+ec;})?ec:'';
+  // Rebuild inspector pills for req/exc on the add-job form
+  var rp=document.getElementById('f-jreq-pills');
+  var ep=document.getElementById('f-jexc-pills');
+  if(!rp||!ep)return;
+  rp.innerHTML=inspectors.map(function(i){
+    return'<span class="mpill'+(curReqIds.indexOf(i.id)>=0?' req-on':'')+(i.unavailable?' mpill-dis':'')+'" id="rp-'+i.id+'" onclick="toggleReqPill('+i.id+')" style="'+(i.unavailable?'opacity:.45;cursor:default':'')+'">'+i.name+'</span>';
+  }).join('');
+  ep.innerHTML=inspectors.map(function(i){
+    return'<span class="mpill'+(curExcIds.indexOf(i.id)>=0?' exc-on':'')+'" id="ep-'+i.id+'" onclick="toggleExcPill('+i.id+')">'+i.name+'</span>';
+  }).join('');
 }
 
 function renderJobList(){
@@ -708,6 +722,30 @@ function buildExport(){
 }
 function copyExport(){var t=document.getElementById('exp-box').textContent;navigator.clipboard.writeText(t).then(function(){setStatus('Copied!');}).catch(function(){setStatus('Copy failed — select manually.');});}
 
+function exportSettings(){
+  var payload=JSON.stringify({v:1,inspectors:inspectors,jobs:jobs,office:office});
+  navigator.clipboard.writeText(payload).then(function(){
+    setStatus('Settings copied to clipboard — paste on the other device.');
+  }).catch(function(){
+    setStatus('Copy failed — select the text in the import box manually.');
+    document.getElementById('import-box').value=payload;
+  });
+}
+
+function importSettings(){
+  var raw=document.getElementById('import-box').value.trim();
+  if(!raw){setStatus('Paste a settings code first.');return;}
+  try{
+    var d=JSON.parse(raw);
+    if(!d.v||!Array.isArray(d.inspectors)){setStatus('Invalid settings code.');return;}
+    inspectors=d.inspectors||[];
+    jobs=d.jobs||[];
+    office=d.office||null;
+    save();renderAll();renderOffice();renderMap();
+    document.getElementById('import-box').value='';
+    setStatus('Settings imported — '+inspectors.length+' inspector(s), '+jobs.length+' job(s).');
+  }catch(e){setStatus('Could not read settings code. Make sure you copied it completely.');}
+}
 function renderMap(){
   layers.forEach(function(l){map.removeLayer(l);});layers=[];
   // Office pin

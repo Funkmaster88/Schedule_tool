@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.6.1] — 2026-04-07
+
+### Fixed
+- **Critical: app stuck on "Geocoding…" when adding jobs** — old dropdown-based `updateDrops` function was still present after the pill UI replacement, crashing with `Cannot read properties of null` on the removed `f-jreq`/`f-jexc` select elements, which prevented `renderAll` from completing and left the status bar frozen
+
+---
+
+## [1.6.0] — 2026-04-07
+
+### Added
+- **Settings transfer** in the Export tab — export your full inspector roster, office, and jobs as a single clipboard code; paste it on any other device or browser to restore everything instantly
+- Import validates the code before applying so a bad paste won't wipe your data
+
+---
+
 ## [1.5.0] — 2026-04-07
 
 ### Added
