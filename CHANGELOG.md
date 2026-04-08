@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.9.0] — 2026-04-07
+
+### Changed
+- **Cluster-aware Radon/Mold bundling** — standalone Radon/Mold jobs now check for nearby primary jobs (within 5 miles) before assigning. If a Gas/Sewer inspector is already going to a nearby house, the Radon/Mold job bundles with them instead of going to a separate inspector
+- **2x time guard** — a Radon/Mold job only bundles with a nearby inspector if doing so wouldn't push their total committed time over 2x the lightest inspector's current load. If it would, the job falls through to the lightest-load inspector instead
+- **Heaviest jobs assigned first** — primary jobs are now sorted by service time descending before assignment, so the heaviest jobs (Gas+Sewer) get first pick of the closest available inspector rather than being processed in input order
+- Radon/Mold fallback still assigns to lightest committed time inspector, breaking ties by distance
+
+---
+
+## [1.8.1] — 2026-04-07
+
+### Changed
+- **Radon/Mold assignment now balances by total time load** — instead of assigning to the closest inspector, standalone Radon/Mold jobs now go to whichever inspector has the least committed service time so far. This prevents stacking a 10-minute Radon drop-off on an inspector already doing a 1h 45m Gas+Sewer house when another inspector only has a 1-hour Sewer job. Ties in time are broken by proximity.
+
+---
+
+## [1.8.0] — 2026-04-07
+
+### Changed
+- **Radon/Mold-only jobs no longer consume a primary inspector slot** — a standalone Radon or Mold job (no Gas or Sewer at the same house) is assigned to the closest certified inspector but does not count as their primary assignment, meaning that inspector is still eligible to receive a Gas or Sewer job on top of it
+- Gas/Sewer + Radon/Mold combo jobs at the same house are still handled by one inspector as a single full assignment and do count as a primary slot
+- Split calculation now excludes Radon/Mold-only jobs from the jobs-vs-inspectors gap count, so they never trigger unnecessary splits
+
+---
+
 ## [1.7.3] — 2026-04-07
 
 ### Changed
