@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.9.1] — 2026-04-07
+
+### Changed
+- **Global split optimization** — when splits are needed, the algorithm now evaluates all possible gas+sewer inspector combinations across all split-eligible jobs simultaneously, choosing the pairing that minimizes total combined distance. Previously splits were processed job-by-job in input order, causing suboptimal pairings when two jobs of equal weight competed for the same inspectors
+
+---
+
 ## [1.9.0] — 2026-04-07
 
 ### Changed

@@ -521,25 +521,63 @@ function runAssignment(){
     pairs.sort(function(a,b){return a.dist-b.dist;});
 
     var assignedJobIds={};
+
+    // For jobs needing splits, evaluate all possible gas+sewer pairings globally
+    // to find the combination that minimizes total combined distance
+    if(splitsNeeded>0){
+      var splitCandidates=sortedPrimary.filter(function(j){return j.gas&&j.sewer&&!assignedJobIds[j.id];});
+      var idleInspectors=avail.filter(function(i){return pc[i.id]===0;});
+
+      // Try all combinations of split jobs × gas inspector × sewer inspector
+      // Pick the set of splits that minimizes total distance sum
+      var bestSplitPlan=null,bestSplitScore=Infinity;
+
+      // For simplicity with typical team sizes (2-8 inspectors, 2-8 jobs),
+      // evaluate each split job independently choosing best gas+sewer pair
+      // that haven't been used yet — greedy but globally aware
+      var usedInSplit={};
+      var splitPlan=[];
+
+      for(var si=0;si<splitsNeeded&&si<splitCandidates.length;si++){
+        var sJob=splitCandidates[si];
+        var excIds=sJob.excludedIds||[];
+
+        // Build all possible gas+sewer inspector combos for this job
+        var gasPool=idleInspectors.filter(function(i){return i.gas&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
+        var sewPool2=idleInspectors.filter(function(i){return i.sewer&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
+
+        var bestCombo=null,bestComboScore=Infinity;
+        gasPool.forEach(function(g){
+          sewPool2.filter(function(s){return s.id!==g.id;}).forEach(function(s){
+            var score=hav(g,sJob)+hav(s,sJob);
+            if(score<bestComboScore){bestComboScore=score;bestCombo={g:g,s:s};}
+          });
+        });
+
+        if(bestCombo){
+          splitPlan.push({job:sJob,gas:bestCombo.g,sew:bestCombo.s});
+          usedInSplit[bestCombo.g.id]=true;
+          usedInSplit[bestCombo.s.id]=true;
+        }
+      }
+
+      // Apply the split plan
+      splitPlan.forEach(function(plan){
+        var job=plan.job,bg=plan.gas,bs=plan.sew;
+        job.assignedTo=bg.id;job.distFromHome=hav(bg,job);
+        job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);
+        lc[bg.id]++;pc[bg.id]++;lc[bs.id]++;pc[bs.id]++;
+        assignedJobIds[job.id]=true;
+      });
+    }
+
+    // Assign remaining primary jobs (non-split) — closest idle inspector first
     pairs.forEach(function(pair){
       var job=pair.job,insp=pair.insp;
       if(assignedJobIds[job.id])return;
       if(pc[insp.id]>0)return;
       var excIds=job.excludedIds||[];
       if(excIds.indexOf(insp.id)>=0)return;
-
-      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
-      var trySplit=splitsUsed<splitsNeeded&&job.gas&&job.sewer&&insp.gas;
-      if(trySplit){
-        var sewPool=pool.filter(function(i){return i.sewer&&i.id!==insp.id&&pc[i.id]===0;});
-        var bs=pickBest(sewPool,job,lc);
-        if(bs){
-          job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
-          job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);
-          lc[insp.id]++;pc[insp.id]++;lc[bs.id]++;pc[bs.id]++;
-          splitsUsed++;assignedJobIds[job.id]=true;return;
-        }
-      }
       if(!certOk(insp,job)) job.certConflict=true;
       job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
       lc[insp.id]++;pc[insp.id]++;assignedJobIds[job.id]=true;
