@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.4.1] — 2026-04-07
+
+### Fixed
+- **Critical: Split logic failing silently when all inspectors had equal load** — `pickBest` sorts by load count first then distance, so with everyone at zero touches it was returning the same closest inspector for both the gas and sewer pool. The `bg.id !== bs.id` guard correctly caught the collision but fell back to single assignment instead of forcing a different sewer pick
+- Gas pool now prefers idle inspectors first before falling back to full pool
+- Sewer pool now **explicitly excludes whoever was just picked for gas**, then prefers idle from remaining candidates
+- Result: Stone (4th inspector) now correctly receives a sewer split assignment when Gas+Sewer jobs are available and he is idle
+
+---
+
 ## [1.4.0] — 2026-04-07
 
 ### Fixed
