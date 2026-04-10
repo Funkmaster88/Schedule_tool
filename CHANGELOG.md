@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.2] — 2026-04-09
+
+### Added
+- **Unassign all button** on the Jobs tab — clears all current assignments without removing jobs, useful for resetting before re-running auto-assign
+
+---
+
 ## [2.1.1] — 2026-04-09
 
 ### Changed

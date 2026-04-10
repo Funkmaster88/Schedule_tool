@@ -179,6 +179,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
             <button class="btn dark" id="add-job-btn">Add job</button>
           </div>
           <button class="btn green" id="assign-btn">Auto-assign all jobs ↗</button>
+          <button class="btn" id="unassign-btn" style="margin-top:4px;color:#b91c1c;border-color:#fca5a5;">✕ Unassign all</button>
         </div>
       </div>
 
@@ -259,6 +260,10 @@ window.addEventListener('load', function() {
   document.getElementById('add-insp-btn').addEventListener('click', addInspector);
   document.getElementById('add-job-btn').addEventListener('click', addJob);
   document.getElementById('assign-btn').addEventListener('click', runAssignment);
+  document.getElementById('unassign-btn').addEventListener('click', function(){
+    jobs.forEach(function(j){j.assignedTo=null;j.distFromHome=null;j.certConflict=false;j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;});
+    save();renderAll();setStatus('All assignments cleared.');
+  });
   document.getElementById('clear-jobs-btn').addEventListener('click', function(){ jobs=[]; save(); renderAll(); setStatus('Jobs cleared.'); });
   document.getElementById('copy-btn').addEventListener('click', copyExport);
   document.getElementById('set-office-btn').addEventListener('click', setOffice);
