@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.0] — 2026-04-07
+
+### Changed
+- **Split logic completely reworked — cert-gap only** — a Gas+Sewer job is now only split when no fully Gas+Sewer certified idle inspector is available. If John, Stephen, and Stone are all Gas+Sewer certified and all have open slots, each gets a full house — no splits. Only when all certified inspectors are already assigned does the algorithm split, giving Sewer to the closest idle sewer-certified inspector and Gas as an add-on to the closest gas-certified inspector (who may already have a job)
+- Removed the old "inspectors outnumber jobs" split trigger entirely — that was causing unnecessary splits on days where everyone could handle a full house
+
+---
+
+## [2.0.1] — 2026-04-07
+
+### Changed
+- **Radon/Mold assignment simplified to pure proximity** — closest certified inspector gets the job, no time-balance calculation. Clean and predictable: requests → splits → Gas/Sewer by proximity → Radon/Mold by proximity
+
+---
+
 ## [2.0.0] — 2026-04-07
 
 ### Changed

@@ -462,18 +462,7 @@ function runAssignment(){
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
   jobs.forEach(function(j){j.assignedTo=null;j.distFromHome=null;j.certConflict=false;j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;});
 
-  // Radon/Mold-only jobs don't consume a primary slot (quick drop-off)
   function isRadonMoldOnly(job){ return !job.gas&&!job.sewer&&(job.radon||job.mold); }
-
-  // Total committed service minutes for an inspector in this window
-  function committedMins(inspId,wj){
-    var t=0;
-    wj.forEach(function(j){
-      if(j.assignedTo===inspId) t+=jobSvcMins(j);
-      if(j.splitAssignedTo===inspId) t+=splitSvcMins(j);
-    });
-    return t;
-  }
 
   ['AM','PM'].forEach(function(win){
     var wj=jobs.filter(function(j){return j.window===win;});
@@ -497,68 +486,81 @@ function runAssignment(){
     var radMoldJobs=unassigned.filter(isRadonMoldOnly);
     var primaryJobs=unassigned.filter(function(j){return !isRadonMoldOnly(j);});
 
-    // ── Step 2: Handle splits if inspectors outnumber primary jobs ─
-    var usedPrimary=Object.keys(pc).reduce(function(s,k){return s+(pc[k]>0?1:0);},0);
-    var idleCount=avail.length-usedPrimary;
-    var splitsNeeded=Math.max(0,idleCount-primaryJobs.length);
+    // ── Step 2: Assign Gas+Sewer jobs to fully certified idle inspectors ──
+    // Only split if NO fully certified idle inspector is available (cert-gap only)
+    var gasSewer=primaryJobs.filter(function(j){return j.gas&&j.sewer;});
+    var otherPrimary=primaryJobs.filter(function(j){return !j.gas||!j.sewer;});
+    var needsSplit=[];
 
-    if(splitsNeeded>0){
-      var idleInspectors=avail.filter(function(i){return pc[i.id]===0;});
-      var splitCandidates=primaryJobs.filter(function(j){return j.gas&&j.sewer;});
-      var usedInSplit={};
-
-      for(var si=0;si<splitsNeeded&&si<splitCandidates.length;si++){
-        var sJob=splitCandidates[si];
-        var excIds=sJob.excludedIds||[];
-        var gasPool=idleInspectors.filter(function(i){return i.gas&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
-        var sewPool=idleInspectors.filter(function(i){return i.sewer&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
-        var bestCombo=null,bestScore=Infinity;
-        gasPool.forEach(function(g){
-          sewPool.filter(function(s){return s.id!==g.id;}).forEach(function(s){
-            var score=hav(g,sJob)+hav(s,sJob);
-            if(score<bestScore){bestScore=score;bestCombo={g:g,s:s};}
-          });
-        });
-        if(bestCombo){
-          sJob.assignedTo=bestCombo.g.id;sJob.distFromHome=hav(bestCombo.g,sJob);
-          sJob.splitService='sewer';sJob.splitAssignedTo=bestCombo.s.id;sJob.splitDist=hav(bestCombo.s,sJob);
-          lc[bestCombo.g.id]++;pc[bestCombo.g.id]++;
-          lc[bestCombo.s.id]++;pc[bestCombo.s.id]++;
-          usedInSplit[bestCombo.g.id]=true;usedInSplit[bestCombo.s.id]=true;
-          primaryJobs=primaryJobs.filter(function(j){return j.id!==sJob.id;});
-        }
-      }
-    }
-
-    // ── Step 3: Assign remaining primary jobs ─────────────────────
-    // Sort heaviest first so Gas+Sewer jobs get first pick of closest inspector
-    var sortedPrimary=primaryJobs.filter(function(j){return !j.assignedTo;}).slice().sort(function(a,b){
-      return calcSvcMins(b.gas,b.sewer,b.radon,b.mold,null)-calcSvcMins(a.gas,a.sewer,a.radon,a.mold,null);
-    });
-
-    var pairs=[];
-    sortedPrimary.forEach(function(job){
+    var gsPairs=[];
+    gasSewer.forEach(function(job){
       var excIds=job.excludedIds||[];
-      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
-      if(!pool.length) pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
-      if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
-      pool.forEach(function(insp){pairs.push({job:job,insp:insp,dist:hav(insp,job)});});
+      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&i.gas&&i.sewer&&pc[i.id]===0;});
+      pool.forEach(function(insp){gsPairs.push({job:job,insp:insp,dist:hav(insp,job)});});
     });
-    pairs.sort(function(a,b){return a.dist-b.dist;});
+    gsPairs.sort(function(a,b){return a.dist-b.dist;});
 
     var assignedJobIds={};
-    pairs.forEach(function(pair){
+    gsPairs.forEach(function(pair){
       var job=pair.job,insp=pair.insp;
-      if(assignedJobIds[job.id]||job.assignedTo)return;
+      if(assignedJobIds[job.id])return;
       if(pc[insp.id]>0)return;
-      var excIds=job.excludedIds||[];
-      if(excIds.indexOf(insp.id)>=0)return;
-      if(!certOk(insp,job)) job.certConflict=true;
+      if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
       job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
       lc[insp.id]++;pc[insp.id]++;assignedJobIds[job.id]=true;
     });
 
-    // Overflow: more primary jobs than inspectors — assign to lightest load
+    gasSewer.forEach(function(job){if(!assignedJobIds[job.id])needsSplit.push(job);});
+
+    // ── Step 3: Cert-gap splits ───────────────────────────────────
+    // All fully certified inspectors already have a job — must split:
+    // Sewer → closest idle sewer-certified inspector (gets primary slot)
+    // Gas   → closest gas-certified inspector (add-on, may already have a job)
+    needsSplit.forEach(function(job){
+      var excIds=job.excludedIds||[];
+      var sewPool=avail.filter(function(i){return i.sewer&&excIds.indexOf(i.id)<0&&pc[i.id]===0;})
+        .slice().sort(function(a,b){return hav(a,job)-hav(b,job);});
+      var gasAny=avail.filter(function(i){return i.gas&&excIds.indexOf(i.id)<0;})
+        .slice().sort(function(a,b){return hav(a,job)-hav(b,job);});
+      var bs=sewPool[0]||null;
+      var bg=gasAny.find(function(i){return !bs||i.id!==bs.id;})||null;
+      if(bs&&bg){
+        job.assignedTo=bs.id;job.distFromHome=hav(bs,job);
+        job.splitService='sewer';job.splitAssignedTo=bg.id;job.splitDist=hav(bg,job);
+        lc[bs.id]++;pc[bs.id]++;lc[bg.id]++;
+        assignedJobIds[job.id]=true;
+      } else {
+        var best=avail.filter(function(i){return excIds.indexOf(i.id)<0;})
+          .slice().sort(function(a,b){return hav(a,job)-hav(b,job);})[0];
+        if(best){
+          job.assignedTo=best.id;job.distFromHome=hav(best,job);
+          if(!certOk(best,job))job.certConflict=true;
+          lc[best.id]++;pc[best.id]++;assignedJobIds[job.id]=true;
+        }
+      }
+    });
+
+    // ── Step 4: Assign remaining primary jobs (Sewer-only etc.) ──
+    var remPairs=[];
+    otherPrimary.filter(function(j){return !j.assignedTo;}).forEach(function(job){
+      var excIds=job.excludedIds||[];
+      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job)&&pc[i.id]===0;});
+      if(!pool.length)pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&pc[i.id]===0;});
+      if(!pool.length)pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
+      if(!pool.length)pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
+      pool.forEach(function(insp){remPairs.push({job:job,insp:insp,dist:hav(insp,job)});});
+    });
+    remPairs.sort(function(a,b){return a.dist-b.dist;});
+    remPairs.forEach(function(pair){
+      var job=pair.job,insp=pair.insp;
+      if(job.assignedTo)return;
+      if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
+      if(!certOk(insp,job))job.certConflict=true;
+      job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
+      lc[insp.id]++;pc[insp.id]++;
+    });
+
+    // Overflow: more jobs than inspectors
     primaryJobs.filter(function(j){return !j.assignedTo;}).forEach(function(job){
       var excIds=job.excludedIds||[];
       var el=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
@@ -569,22 +571,17 @@ function runAssignment(){
       if(w){job.assignedTo=w.id;job.distFromHome=hav(w,job);lc[w.id]++;pc[w.id]++;}
     });
 
-    // ── Step 4: Assign Radon/Mold-only jobs ──────────────────────
-    // Goes to inspector with lightest committed time, ties broken by distance
-    // Does NOT consume a primary slot
+    // ── Step 5: Assign Radon/Mold-only jobs by proximity ─────────
     radMoldJobs.forEach(function(job){
       var excIds=job.excludedIds||[];
       var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
-      if(!pool.length) pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
-      if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
-      var best=pool.slice().sort(function(a,b){
-        var ta=committedMins(a.id,wj),tb=committedMins(b.id,wj);
-        return ta!==tb?ta-tb:hav(a,job)-hav(b,job);
-      })[0];
+      if(!pool.length)pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
+      if(!pool.length)pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
+      var best=pool.slice().sort(function(a,b){return hav(a,job)-hav(b,job);})[0];
       if(best){
-        if(!certOk(best,job)) job.certConflict=true;
+        if(!certOk(best,job))job.certConflict=true;
         job.assignedTo=best.id;job.distFromHome=hav(best,job);
-        lc[best.id]++; // touch but NOT a primary slot
+        lc[best.id]++;
       }
     });
   });
