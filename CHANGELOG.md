@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.1] — 2026-04-09
+
+### Changed
+- **Two-pass primary job assignment** — primary jobs (Gas/Sewer) now use two passes: Pass 1 gives every available inspector one job before anyone gets a second, Pass 2 fills remaining jobs. This prevents one inspector from getting overloaded while others sit with nothing, regardless of proximity ordering
+
+---
+
 ## [2.1.0] — 2026-04-07
 
 ### Changed

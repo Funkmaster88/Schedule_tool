@@ -500,12 +500,23 @@ function runAssignment(){
     });
     gsPairs.sort(function(a,b){return a.dist-b.dist;});
 
+    // Pass 1: one job per inspector
     var assignedJobIds={};
     gsPairs.forEach(function(pair){
       var job=pair.job,insp=pair.insp;
       if(assignedJobIds[job.id])return;
       if(pc[insp.id]>0)return;
       if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
+      job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
+      lc[insp.id]++;pc[insp.id]++;assignedJobIds[job.id]=true;
+    });
+
+    // Pass 2: second gas+sewer jobs only after everyone has one
+    gsPairs.forEach(function(pair){
+      var job=pair.job,insp=pair.insp;
+      if(assignedJobIds[job.id])return;
+      if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
+      if(!insp.gas||!insp.sewer)return;
       job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
       lc[insp.id]++;pc[insp.id]++;assignedJobIds[job.id]=true;
     });
@@ -541,26 +552,39 @@ function runAssignment(){
     });
 
     // ── Step 4: Assign remaining primary jobs (Sewer-only etc.) ──
-    var remPairs=[];
-    otherPrimary.filter(function(j){return !j.assignedTo;}).forEach(function(job){
-      var excIds=job.excludedIds||[];
-      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job)&&pc[i.id]===0;});
-      if(!pool.length)pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&pc[i.id]===0;});
-      if(!pool.length)pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
-      if(!pool.length)pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
-      pool.forEach(function(insp){remPairs.push({job:job,insp:insp,dist:hav(insp,job)});});
-    });
-    remPairs.sort(function(a,b){return a.dist-b.dist;});
-    remPairs.forEach(function(pair){
-      var job=pair.job,insp=pair.insp;
-      if(job.assignedTo)return;
-      if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
-      if(!certOk(insp,job))job.certConflict=true;
-      job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
-      lc[insp.id]++;pc[insp.id]++;
-    });
+    // Two-pass: Pass 1 gives every idle inspector one job first,
+    // Pass 2 allows second jobs only after everyone has at least one
+    var remJobs=otherPrimary.filter(function(j){return !j.assignedTo;});
 
-    // Overflow: more jobs than inspectors
+    function assignPass(jobs,allowSecond){
+      var pairs=[];
+      jobs.forEach(function(job){
+        var excIds=job.excludedIds||[];
+        var pool=avail.filter(function(i){
+          return excIds.indexOf(i.id)<0&&certOk(i,job)&&(allowSecond||pc[i.id]===0);
+        });
+        if(!pool.length)pool=avail.filter(function(i){
+          return excIds.indexOf(i.id)<0&&(allowSecond||pc[i.id]===0);
+        });
+        if(!pool.length)pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
+        pool.forEach(function(insp){pairs.push({job:job,insp:insp,dist:hav(insp,job)});});
+      });
+      pairs.sort(function(a,b){return a.dist-b.dist;});
+      pairs.forEach(function(pair){
+        var job=pair.job,insp=pair.insp;
+        if(job.assignedTo)return;
+        if(!allowSecond&&pc[insp.id]>0)return;
+        if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
+        if(!certOk(insp,job))job.certConflict=true;
+        job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
+        lc[insp.id]++;pc[insp.id]++;
+      });
+    }
+
+    assignPass(remJobs,false); // Pass 1: one job per inspector
+    assignPass(remJobs,true);  // Pass 2: second jobs allowed
+
+    // Overflow: jobs that still couldn't be assigned
     primaryJobs.filter(function(j){return !j.assignedTo;}).forEach(function(job){
       var excIds=job.excludedIds||[];
       var el=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
