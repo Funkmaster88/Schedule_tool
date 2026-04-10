@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.0.0] — 2026-04-07
+
+### Changed
+- **Removed Radon/Mold bundling entirely** — the proximity bundling logic introduced in 1.9.0 was causing Radon jobs to stack on already-loaded inspectors and misfire on geographic assumptions. Removed in favor of a simpler, more reliable approach
+- **Radon/Mold assignment now purely time-balance driven** — standalone Radon/Mold jobs go to whichever inspector has the least committed service time at assignment time, breaking ties by distance from home to job. This naturally spreads quick drop-off jobs to lighter-loaded inspectors without complex clustering
+- Assignment engine simplified to four clean steps: (1) honour requests, (2) handle splits if needed, (3) assign primary Gas/Sewer jobs by proximity, (4) assign Radon/Mold by time balance
+
+---
+
 ## [1.9.1] — 2026-04-07
 
 ### Changed

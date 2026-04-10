@@ -462,11 +462,10 @@ function runAssignment(){
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
   jobs.forEach(function(j){j.assignedTo=null;j.distFromHome=null;j.certConflict=false;j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;});
 
-  var NEARBY_MI=5; // miles threshold for bundling radon/mold with nearby primary job
-
+  // Radon/Mold-only jobs don't consume a primary slot (quick drop-off)
   function isRadonMoldOnly(job){ return !job.gas&&!job.sewer&&(job.radon||job.mold); }
 
-  // Total service minutes an inspector is currently committed to in this window
+  // Total committed service minutes for an inspector in this window
   function committedMins(inspId,wj){
     var t=0;
     wj.forEach(function(j){
@@ -482,7 +481,7 @@ function runAssignment(){
     inspectors.forEach(function(i){lc[i.id]=0;pc[i.id]=0;});
     var avail=inspectors.filter(function(i){return !i.unavailable;});
 
-    // ── Step 1: Honour requested assignments ──────────────────────
+    // ── Step 1: Honour requested assignments ─────────────────────
     wj.forEach(function(job){
       if(!job.requestedIds||!job.requestedIds.length)return;
       var candidates=job.requestedIds.map(function(id){
@@ -498,18 +497,45 @@ function runAssignment(){
     var radMoldJobs=unassigned.filter(isRadonMoldOnly);
     var primaryJobs=unassigned.filter(function(j){return !isRadonMoldOnly(j);});
 
-    // ── Step 2: Assign primary (Gas/Sewer) jobs by proximity ──────
+    // ── Step 2: Handle splits if inspectors outnumber primary jobs ─
     var usedPrimary=Object.keys(pc).reduce(function(s,k){return s+(pc[k]>0?1:0);},0);
     var idleCount=avail.length-usedPrimary;
     var splitsNeeded=Math.max(0,idleCount-primaryJobs.length);
-    var splitsUsed=0;
 
-    // Sort primary jobs by heaviest service time descending so heavier jobs get first pick
-    var sortedPrimary=primaryJobs.slice().sort(function(a,b){
+    if(splitsNeeded>0){
+      var idleInspectors=avail.filter(function(i){return pc[i.id]===0;});
+      var splitCandidates=primaryJobs.filter(function(j){return j.gas&&j.sewer;});
+      var usedInSplit={};
+
+      for(var si=0;si<splitsNeeded&&si<splitCandidates.length;si++){
+        var sJob=splitCandidates[si];
+        var excIds=sJob.excludedIds||[];
+        var gasPool=idleInspectors.filter(function(i){return i.gas&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
+        var sewPool=idleInspectors.filter(function(i){return i.sewer&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
+        var bestCombo=null,bestScore=Infinity;
+        gasPool.forEach(function(g){
+          sewPool.filter(function(s){return s.id!==g.id;}).forEach(function(s){
+            var score=hav(g,sJob)+hav(s,sJob);
+            if(score<bestScore){bestScore=score;bestCombo={g:g,s:s};}
+          });
+        });
+        if(bestCombo){
+          sJob.assignedTo=bestCombo.g.id;sJob.distFromHome=hav(bestCombo.g,sJob);
+          sJob.splitService='sewer';sJob.splitAssignedTo=bestCombo.s.id;sJob.splitDist=hav(bestCombo.s,sJob);
+          lc[bestCombo.g.id]++;pc[bestCombo.g.id]++;
+          lc[bestCombo.s.id]++;pc[bestCombo.s.id]++;
+          usedInSplit[bestCombo.g.id]=true;usedInSplit[bestCombo.s.id]=true;
+          primaryJobs=primaryJobs.filter(function(j){return j.id!==sJob.id;});
+        }
+      }
+    }
+
+    // ── Step 3: Assign remaining primary jobs ─────────────────────
+    // Sort heaviest first so Gas+Sewer jobs get first pick of closest inspector
+    var sortedPrimary=primaryJobs.filter(function(j){return !j.assignedTo;}).slice().sort(function(a,b){
       return calcSvcMins(b.gas,b.sewer,b.radon,b.mold,null)-calcSvcMins(a.gas,a.sewer,a.radon,a.mold,null);
     });
 
-    // Build all inspector-job pairs sorted by distance
     var pairs=[];
     sortedPrimary.forEach(function(job){
       var excIds=job.excludedIds||[];
@@ -521,60 +547,9 @@ function runAssignment(){
     pairs.sort(function(a,b){return a.dist-b.dist;});
 
     var assignedJobIds={};
-
-    // For jobs needing splits, evaluate all possible gas+sewer pairings globally
-    // to find the combination that minimizes total combined distance
-    if(splitsNeeded>0){
-      var splitCandidates=sortedPrimary.filter(function(j){return j.gas&&j.sewer&&!assignedJobIds[j.id];});
-      var idleInspectors=avail.filter(function(i){return pc[i.id]===0;});
-
-      // Try all combinations of split jobs × gas inspector × sewer inspector
-      // Pick the set of splits that minimizes total distance sum
-      var bestSplitPlan=null,bestSplitScore=Infinity;
-
-      // For simplicity with typical team sizes (2-8 inspectors, 2-8 jobs),
-      // evaluate each split job independently choosing best gas+sewer pair
-      // that haven't been used yet — greedy but globally aware
-      var usedInSplit={};
-      var splitPlan=[];
-
-      for(var si=0;si<splitsNeeded&&si<splitCandidates.length;si++){
-        var sJob=splitCandidates[si];
-        var excIds=sJob.excludedIds||[];
-
-        // Build all possible gas+sewer inspector combos for this job
-        var gasPool=idleInspectors.filter(function(i){return i.gas&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
-        var sewPool2=idleInspectors.filter(function(i){return i.sewer&&excIds.indexOf(i.id)<0&&!usedInSplit[i.id];});
-
-        var bestCombo=null,bestComboScore=Infinity;
-        gasPool.forEach(function(g){
-          sewPool2.filter(function(s){return s.id!==g.id;}).forEach(function(s){
-            var score=hav(g,sJob)+hav(s,sJob);
-            if(score<bestComboScore){bestComboScore=score;bestCombo={g:g,s:s};}
-          });
-        });
-
-        if(bestCombo){
-          splitPlan.push({job:sJob,gas:bestCombo.g,sew:bestCombo.s});
-          usedInSplit[bestCombo.g.id]=true;
-          usedInSplit[bestCombo.s.id]=true;
-        }
-      }
-
-      // Apply the split plan
-      splitPlan.forEach(function(plan){
-        var job=plan.job,bg=plan.gas,bs=plan.sew;
-        job.assignedTo=bg.id;job.distFromHome=hav(bg,job);
-        job.splitService='sewer';job.splitAssignedTo=bs.id;job.splitDist=hav(bs,job);
-        lc[bg.id]++;pc[bg.id]++;lc[bs.id]++;pc[bs.id]++;
-        assignedJobIds[job.id]=true;
-      });
-    }
-
-    // Assign remaining primary jobs (non-split) — closest idle inspector first
     pairs.forEach(function(pair){
       var job=pair.job,insp=pair.insp;
-      if(assignedJobIds[job.id])return;
+      if(assignedJobIds[job.id]||job.assignedTo)return;
       if(pc[insp.id]>0)return;
       var excIds=job.excludedIds||[];
       if(excIds.indexOf(insp.id)>=0)return;
@@ -583,7 +558,7 @@ function runAssignment(){
       lc[insp.id]++;pc[insp.id]++;assignedJobIds[job.id]=true;
     });
 
-    // Catch overflow primary jobs (more jobs than inspectors)
+    // Overflow: more primary jobs than inspectors — assign to lightest load
     primaryJobs.filter(function(j){return !j.assignedTo;}).forEach(function(job){
       var excIds=job.excludedIds||[];
       var el=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
@@ -594,54 +569,22 @@ function runAssignment(){
       if(w){job.assignedTo=w.id;job.distFromHome=hav(w,job);lc[w.id]++;pc[w.id]++;}
     });
 
-    // ── Step 3: Assign Radon/Mold-only jobs ───────────────────────
-    // For each radon/mold job, first try to bundle with a nearby primary job
-    // (same inspector, within NEARBY_MI). Only bundle if it won't push that
-    // inspector over 2x the lightest inspector's committed time.
+    // ── Step 4: Assign Radon/Mold-only jobs ──────────────────────
+    // Goes to inspector with lightest committed time, ties broken by distance
+    // Does NOT consume a primary slot
     radMoldJobs.forEach(function(job){
       var excIds=job.excludedIds||[];
-
-      // Find all primary jobs within NEARBY_MI that are already assigned
-      var nearbyPrimary=wj.filter(function(p){
-        return p.assignedTo&&!isRadonMoldOnly(p)&&hav(job,p)<=NEARBY_MI;
-      });
-
-      // Sort nearby by distance to radon job
-      nearbyPrimary.sort(function(a,b){return hav(job,a)-hav(job,b);});
-
-      var assigned=false;
-      for(var ni=0;ni<nearbyPrimary.length;ni++){
-        var pJob=nearbyPrimary[ni];
-        var inspId=pJob.assignedTo;
-        var insp=inspectors.find(function(i){return i.id===inspId;});
-        if(!insp) continue;
-        if(excIds.indexOf(inspId)>=0) continue;
-        if(!certOk(insp,job)) continue;
-
-        // Check 2x time guard
-        var myTime=committedMins(inspId,wj)+calcSvcMins(job.gas,job.sewer,job.radon,job.mold,null);
-        var otherTimes=avail.filter(function(i){return i.id!==inspId;}).map(function(i){return committedMins(i.id,wj);});
-        var minOther=otherTimes.length?Math.min.apply(null,otherTimes):0;
-        if(minOther>0&&myTime>minOther*2) continue; // would exceed 2x lightest inspector
-
-        job.assignedTo=inspId;job.distFromHome=hav(insp,job);
-        lc[inspId]++;assigned=true;break;
-      }
-
-      // No nearby bundle found — assign to lightest time load inspector
-      if(!assigned){
-        var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
-        if(!pool.length) pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
-        if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
-        var best=pool.slice().sort(function(a,b){
-          var ta=committedMins(a.id,wj),tb=committedMins(b.id,wj);
-          return ta!==tb?ta-tb:hav(a,job)-hav(b,job);
-        })[0];
-        if(best){
-          if(!certOk(best,job)) job.certConflict=true;
-          job.assignedTo=best.id;job.distFromHome=hav(best,job);
-          lc[best.id]++;
-        }
+      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
+      if(!pool.length) pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
+      if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
+      var best=pool.slice().sort(function(a,b){
+        var ta=committedMins(a.id,wj),tb=committedMins(b.id,wj);
+        return ta!==tb?ta-tb:hav(a,job)-hav(b,job);
+      })[0];
+      if(best){
+        if(!certOk(best,job)) job.certConflict=true;
+        job.assignedTo=best.id;job.distFromHome=hav(best,job);
+        lc[best.id]++; // touch but NOT a primary slot
       }
     });
   });
