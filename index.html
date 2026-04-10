@@ -557,28 +557,30 @@ function runAssignment(){
     });
 
     // ── Step 4: Assign remaining primary jobs (Sewer-only etc.) ──
-    // Two-pass: Pass 1 gives every idle inspector one job first,
-    // Pass 2 allows second jobs only after everyone has at least one
+    // Balanced greedy: sort all inspector-job pairs by distance,
+    // but enforce fair share — no inspector gets more than ceil(jobs/inspectors)
+    // primary jobs until everyone has had their turn at each quota level.
     var remJobs=otherPrimary.filter(function(j){return !j.assignedTo;});
+    var activeInspCount=avail.length;
+    var fairShare=activeInspCount>0?Math.ceil(remJobs.length/activeInspCount):1;
 
-    function assignPass(jobs,allowSecond){
-      var pairs=[];
-      jobs.forEach(function(job){
-        var excIds=job.excludedIds||[];
-        var pool=avail.filter(function(i){
-          return excIds.indexOf(i.id)<0&&certOk(i,job)&&(allowSecond||pc[i.id]===0);
-        });
-        if(!pool.length)pool=avail.filter(function(i){
-          return excIds.indexOf(i.id)<0&&(allowSecond||pc[i.id]===0);
-        });
-        if(!pool.length)pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
-        pool.forEach(function(insp){pairs.push({job:job,insp:insp,dist:hav(insp,job)});});
-      });
-      pairs.sort(function(a,b){return a.dist-b.dist;});
-      pairs.forEach(function(pair){
+    // Build all pairs sorted by distance
+    var allRemPairs=[];
+    remJobs.forEach(function(job){
+      var excIds=job.excludedIds||[];
+      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});
+      if(!pool.length)pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
+      if(!pool.length)pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
+      pool.forEach(function(insp){allRemPairs.push({job:job,insp:insp,dist:hav(insp,job)});});
+    });
+    allRemPairs.sort(function(a,b){return a.dist-b.dist;});
+
+    // Assign quota level by quota level (1 job each, then 2 each, etc.)
+    for(var quota=1;quota<=fairShare;quota++){
+      allRemPairs.forEach(function(pair){
         var job=pair.job,insp=pair.insp;
         if(job.assignedTo)return;
-        if(!allowSecond&&pc[insp.id]>0)return;
+        if(pc[insp.id]>=quota)return; // already at this quota level
         if((job.excludedIds||[]).indexOf(insp.id)>=0)return;
         if(!certOk(insp,job))job.certConflict=true;
         job.assignedTo=insp.id;job.distFromHome=hav(insp,job);
@@ -586,10 +588,7 @@ function runAssignment(){
       });
     }
 
-    assignPass(remJobs,false); // Pass 1: one job per inspector
-    assignPass(remJobs,true);  // Pass 2: second jobs allowed
-
-    // Overflow: jobs that still couldn't be assigned
+    // Overflow: any still-unassigned jobs (more jobs than inspectors × fairShare)
     primaryJobs.filter(function(j){return !j.assignedTo;}).forEach(function(job){
       var excIds=job.excludedIds||[];
       var el=avail.filter(function(i){return excIds.indexOf(i.id)<0&&certOk(i,job);});

@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.3] — 2026-04-09
+
+### Changed
+- **Fair-share balanced assignment** — primary job assignment now enforces a quota per inspector based on `ceil(jobs/inspectors)`. All inspectors fill quota level 1 before anyone gets a second job, quota level 2 before a third, etc. Within each quota level, closest inspector still wins. This prevents one inspector from accumulating multiple jobs while others sit with none
+
+---
+
 ## [2.1.2] — 2026-04-09
 
 ### Added
