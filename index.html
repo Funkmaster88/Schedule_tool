@@ -656,15 +656,19 @@ function runAssignment(){
     var avail=inspectors.filter(function(i){return !i.unavailable;});
     if(!avail.length) avail=inspectors.slice(); // fallback: use everyone
 
-    // Helper: current estimated total minutes for an inspector
+    // Helper: current estimated total minutes for an inspector (THIS WINDOW ONLY)
     function currentMins(insp){
-      return inspTotalMins(insp, assigned[insp.id], splits[insp.id]);
+      var winAssigned = assigned[insp.id].filter(function(j){return j.window===win;});
+      var winSplits = splits[insp.id].filter(function(j){return j.window===win;});
+      return inspTotalMins(insp, winAssigned, winSplits);
     }
 
-    // Helper: estimated total if we add this job to this inspector
+    // Helper: estimated total if we add this job to this inspector (THIS WINDOW ONLY)
     function projectedMins(insp, job, asSplit){
-      var newAssigned = asSplit ? assigned[insp.id].slice() : assigned[insp.id].concat([job]);
-      var newSplits   = asSplit ? splits[insp.id].concat([job]) : splits[insp.id].slice();
+      var winAssigned = assigned[insp.id].filter(function(j){return j.window===win;});
+      var winSplits = splits[insp.id].filter(function(j){return j.window===win;});
+      var newAssigned = asSplit ? winAssigned.slice() : winAssigned.concat([job]);
+      var newSplits   = asSplit ? winSplits.concat([job]) : winSplits.slice();
       return inspTotalMins(insp, newAssigned, newSplits);
     }
 
@@ -730,17 +734,19 @@ function runAssignment(){
             shouldSplit=true;
           }else{
             // Both options available — check if splitting gives better balance
-            // Key insight: if the dual inspector already has requested jobs, prefer splitting
-            var dualHasRequest=assigned[bestDual.id].some(function(j){return j.requestedIds&&j.requestedIds.indexOf(bestDual.id)>=0;});
+            // Check if ANY inspector with requests already has work in this window
+            var anyoneHasRequest=Object.keys(assigned).some(function(inspId){
+              return assigned[inspId].some(function(j){return j.requestedIds&&j.requestedIds.length;});
+            });
             var sewLoad=currentMins(bestSew);
             var dualLoad=currentMins(bestDual);
 
-            // If dual already has a lot of work (especially from requests) and sewer is light,
-            // prefer splitting to balance things out
-            if(dualHasRequest && sewLoad < dualLoad * 0.6){
+            // If someone with a requested job is already working AND sewer inspector is much lighter,
+            // prefer splitting to balance instead of overloading another dual inspector
+            if(anyoneHasRequest && sewLoad < dualLoad * 0.5){
               shouldSplit=true;
-            }else if(sewLoad < dualLoad * 0.4){
-              // Even without requests, if sewer inspector is very light, split
+            }else if(sewLoad < dualLoad * 0.3){
+              // Even without requests, if sewer inspector is very light, split aggressively
               shouldSplit=true;
             }
           }
