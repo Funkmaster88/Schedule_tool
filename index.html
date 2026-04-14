@@ -345,12 +345,14 @@ function renderOffice(){
 // ── Geocode ───────────────────────────────────────────
 function geocode(addr){
   var b=addr.trim();
+  var bClean=b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim();
   var queries=[
-    b+', St. Louis, MO',
+    b,
     b+', Missouri',
-    b+', Saint Louis, MO',
-    b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim()+', St. Louis, MO',
-    b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim()+', Missouri'
+    b+', St. Louis, MO',
+    bClean,
+    bClean+', Missouri',
+    bClean+', St. Louis, MO'
   ].filter(function(q,i,a){return a.indexOf(q)===i;});
   return tryQ(queries,0);
 }
