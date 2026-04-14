@@ -725,13 +725,18 @@ function runAssignment(){
             // No dual available — must split
             shouldSplit=true;
           }else{
-            // Both options available — pick the one with better balance
-            var singleMax=projectedMins(bestDual,job,false);
-            var gasMax=projectedMins(bestGas,job,false);
-            var sewMax=projectedMins(bestSew,job,true);
-            var splitMax=Math.max(gasMax,sewMax);
+            // Both options available — check if splitting gives better balance
+            // Key insight: if the dual inspector already has requested jobs, prefer splitting
+            var dualHasRequest=assigned[bestDual.id].some(function(j){return j.requestedIds&&j.requestedIds.length;});
+            var sewLoad=currentMins(bestSew);
+            var dualLoad=currentMins(bestDual);
 
-            if(splitMax < singleMax){
+            // If dual already has a lot of work (especially from requests) and sewer is light,
+            // prefer splitting to balance things out
+            if(dualHasRequest && sewLoad < dualLoad * 0.6){
+              shouldSplit=true;
+            }else if(sewLoad < dualLoad * 0.4){
+              // Even without requests, if sewer inspector is very light, split
               shouldSplit=true;
             }
           }
