@@ -198,52 +198,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
         </div>
         <div class="section">
           <div class="sec-title">Changelog</div>
-          <div style="font-size:11px;color:#555;line-height:1.7">
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v11 — Time-balanced routing (current)</div>
-              <div style="color:#888">Fixed major bug where one inspector could receive 5+ hrs of work in a 3-hr window. Algorithm now balances by estimated minutes (service time + drive time) instead of job count. Heaviest jobs assigned first. Summary cards show time range instead of job counts.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v10 — Address geocoding fallback + inspector exclusions</div>
-              <div style="color:#888">Added multi-attempt geocoding for newer addresses (tries 5 query formats before giving up). Added excluded inspector dropdown per job — prevents specific inspectors from being assigned regardless of availability.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v9 — Stability fix</div>
-              <div style="color:#888">Rewired all event listeners to fire after page load. Fixed map not rendering and inputs not responding in embedded iframe context.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v8 — Five feature upgrade</div>
-              <div style="color:#888">Added unavailable toggle (⊘) per inspector for vacation/sick days. Added notes field on jobs. Added manual reassign dropdown in Assignments tab. Added Export tab with clipboard copy. Added per-inspector job cap (later removed).</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v7 — Inline editing</div>
-              <div style="color:#888">Added edit (✎) button on every inspector and job. Inline edit forms pre-fill all current values. Address changes trigger re-geocoding automatically. Editing a job clears its assignment to prevent stale routing data.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v6 — AM/PM windows + cert splitting</div>
-              <div style="color:#888">Added AM (9–12) and PM (2–5) window toggle per job. Assignments view grouped by window. When a job needs both Gas and Sewer, algorithm attempts to split across two inspectors rather than pile both on one dual-certified inspector.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v5 — Radon and Mold certifications</div>
-              <div style="color:#888">Added Radon and Mold cert toggles alongside Gas and Sewer on both inspectors and jobs. All four feed into cert-matching logic. Color coded: Gas=amber, Sewer=green, Radon=purple, Mold=coral.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v4 — Tile provider fix</div>
-              <div style="color:#888">Switched map tiles from OpenStreetMap to CartoDB to resolve 403 referer-blocked errors in embedded environments.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v3 — Load balancing</div>
-              <div style="color:#888">Replaced pure distance-based assignment with load-balanced greedy: fewest jobs first, distance as tiebreaker. Added assignment summary cards (total jobs, active inspectors, spread, balance verdict). Added load bar on each inspector chip.</div>
-            </div>
-            <div style="margin-bottom:10px">
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v2 — Certifications + inspector request/exclude</div>
-              <div style="color:#888">Added Gas and Sewer cert toggles per inspector and per job. Only certified inspectors are eligible for cert-required jobs. Added requested inspector dropdown (overrides auto-assign). Cert conflict flagging when no certified inspector is available.</div>
-            </div>
-            <div>
-              <div style="font-weight:600;color:#111;margin-bottom:2px">v1 — Initial build</div>
-              <div style="color:#888">Basic dispatch tool with St. Louis map (Leaflet.js). Inspector home address roster with geocoding. Job address input with auto-assignment to closest inspector by straight-line distance. Color-coded map pins and dashed routing lines.</div>
-            </div>
-          </div>
+          <button class="btn dark" onclick="openChangelogModal()" style="width:100%">View changelog</button>
         </div>
         <div class="section">
           <div class="sec-title">Transfer settings</div>
@@ -262,6 +217,61 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
   </div>
 
   <div class="map-wrap"><div id="map"></div></div>
+
+  <div id="changelog-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:white;border-radius:12px;width:90%;max-width:600px;max-height:80vh;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.2);padding:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2 style="margin:0;font-size:18px;font-weight:600">Changelog</h2>
+        <button style="background:none;border:none;font-size:24px;cursor:pointer;color:#999" onclick="closeChangelogModal()">×</button>
+      </div>
+      <div style="font-size:12px;color:#555;line-height:1.8;">
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v11 — Time-balanced routing (current)</div>
+          <div style="color:#888">Fixed major bug where one inspector could receive 5+ hrs of work in a 3-hr window. Algorithm now balances by estimated minutes (service time + drive time) instead of job count. Heaviest jobs assigned first. Summary cards show time range instead of job counts.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v10 — Address geocoding fallback + inspector exclusions</div>
+          <div style="color:#888">Added multi-attempt geocoding for newer addresses (tries 5 query formats before giving up). Added excluded inspector dropdown per job — prevents specific inspectors from being assigned regardless of availability.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v9 — Stability fix</div>
+          <div style="color:#888">Rewired all event listeners to fire after page load. Fixed map not rendering and inputs not responding in embedded iframe context.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v8 — Five feature upgrade</div>
+          <div style="color:#888">Added unavailable toggle (⊘) per inspector for vacation/sick days. Added notes field on jobs. Added manual reassign dropdown in Assignments tab. Added Export tab with clipboard copy. Added per-inspector job cap (later removed).</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v7 — Inline editing</div>
+          <div style="color:#888">Added edit (✎) button on every inspector and job. Inline edit forms pre-fill all current values. Address changes trigger re-geocoding automatically. Editing a job clears its assignment to prevent stale routing data.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v6 — AM/PM windows + cert splitting</div>
+          <div style="color:#888">Added AM (9–12) and PM (2–5) window toggle per job. Assignments view grouped by window. When a job needs both Gas and Sewer, algorithm attempts to split across two inspectors rather than pile both on one dual-certified inspector.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v5 — Radon and Mold certifications</div>
+          <div style="color:#888">Added Radon and Mold cert toggles alongside Gas and Sewer on both inspectors and jobs. All four feed into cert-matching logic. Color coded: Gas=amber, Sewer=green, Radon=purple, Mold=coral.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v4 — Tile provider fix</div>
+          <div style="color:#888">Switched map tiles from OpenStreetMap to CartoDB to resolve 403 referer-blocked errors in embedded environments.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v3 — Load balancing</div>
+          <div style="color:#888">Replaced pure distance-based assignment with load-balanced greedy: fewest jobs first, distance as tiebreaker. Added assignment summary cards (total jobs, active inspectors, spread, balance verdict). Added load bar on each inspector chip.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v2 — Certifications + inspector request/exclude</div>
+          <div style="color:#888">Added Gas and Sewer cert toggles per inspector and per job. Only certified inspectors are eligible for cert-required jobs. Added requested inspector dropdown (overrides auto-assign). Cert conflict flagging when no certified inspector is available.</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v1 — Initial build</div>
+          <div style="color:#888">Basic dispatch tool with St. Louis map (Leaflet.js). Inspector home address roster with geocoding. Job address input with auto-assignment to closest inspector by straight-line distance. Color-coded map pins and dashed routing lines.</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -346,14 +356,19 @@ function renderOffice(){
 function geocode(addr){
   var b=addr.trim();
   var bClean=b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim();
-  var queries=[
-    b,
-    b+', Missouri',
-    b+', St. Louis, MO',
-    bClean,
-    bClean+', Missouri',
-    bClean+', St. Louis, MO'
-  ].filter(function(q,i,a){return a.indexOf(q)===i;});
+  var hasState=/\b(MO|Missouri|Saint Louis)\b/i.test(b);
+  var queries=[];
+  if(hasState){
+    queries=[b, bClean];
+  }else{
+    queries=[
+      b+', Missouri',
+      b+', St. Louis, MO',
+      bClean+', Missouri',
+      bClean+', St. Louis, MO'
+    ];
+  }
+  queries=queries.filter(function(q,i,a){return a.indexOf(q)===i;});
   return tryQ(queries,0);
 }
 function tryQ(queries,idx){
@@ -403,12 +418,28 @@ function inspTotalMins(insp, assignedJobs, splitJobs){
     total+=driveMins(hav(insp,amJobs[0]));
     // Drive between AM jobs
     for(var i=1;i<amJobs.length;i++) total+=driveMins(hav(amJobs[i-1],amJobs[i]));
-    // After last AM job: drive to office (if set and there are PM jobs), else back home
-    if(pmJobs.length && office) total+=driveMins(hav(amJobs[amJobs.length-1],office));
-    else if(!pmJobs.length)     total+=driveMins(hav(amJobs[amJobs.length-1],insp));
+    // After last AM job: choose closer of home or office for midday break
+    var lastAM=amJobs[amJobs.length-1];
+    if(pmJobs.length && office){
+      var toHome=driveMins(hav(lastAM,insp));
+      var toOffice=driveMins(hav(lastAM,office));
+      total+=(toHome<toOffice?toHome:toOffice);
+    }else if(!pmJobs.length){
+      total+=driveMins(hav(lastAM,insp));
+    }
   }
   if(pmJobs.length){
-    var pmStart = (office && amJobs.length) ? office : insp;
+    // Start PM from closer of home or office (if set and had AM jobs)
+    var pmStart;
+    if(amJobs.length && office){
+      var toHome=driveMins(hav(amJobs[amJobs.length-1],insp));
+      var toOffice=driveMins(hav(amJobs[amJobs.length-1],office));
+      pmStart=(toHome<toOffice?insp:office);
+    }else if(office && !amJobs.length){
+      pmStart=office;
+    }else{
+      pmStart=insp;
+    }
     total+=driveMins(hav(pmStart,pmJobs[0]));
     for(var i=1;i<pmJobs.length;i++) total+=driveMins(hav(pmJobs[i-1],pmJobs[i]));
     total+=driveMins(hav(pmJobs[pmJobs.length-1],insp));
@@ -609,16 +640,17 @@ function runAssignment(){
     j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;
   });
 
+  // Live tracking: primary assigned jobs and split (sewer-add-on) jobs per inspector
+  // Initialized ONCE, NOT per window, so PM assignments consider AM load
+  var assigned={}, splits={};
+  inspectors.forEach(function(i){assigned[i.id]=[]; splits[i.id]=[];});
+
   ['AM','PM'].forEach(function(win){
     var wj=jobs.filter(function(j){return j.window===win;});
     if(!wj.length) return;
 
     var avail=inspectors.filter(function(i){return !i.unavailable;});
     if(!avail.length) avail=inspectors.slice(); // fallback: use everyone
-
-    // Live tracking: primary assigned jobs and split (sewer-add-on) jobs per inspector
-    var assigned={}, splits={};
-    inspectors.forEach(function(i){assigned[i.id]=[]; splits[i.id]=[];});
 
     // Helper: current estimated total minutes for an inspector
     function currentMins(insp){
@@ -927,6 +959,18 @@ function renderMap(){
   var pts=layers.filter(function(l){return l.getLatLng;});
   if(pts.length>1){try{map.fitBounds(L.featureGroup(pts).getBounds().pad(.15));}catch(e){}}
 }
+
+// ── Changelog modal ────────────────────────────────────
+function openChangelogModal(){
+  document.getElementById('changelog-modal').style.display='flex';
+}
+function closeChangelogModal(){
+  document.getElementById('changelog-modal').style.display='none';
+}
+window.addEventListener('click', function(event){
+  var modal=document.getElementById('changelog-modal');
+  if(event.target===modal) modal.style.display='none';
+});
 </script>
 </body>
 </html>
