@@ -173,7 +173,6 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
             <div class="multi-pick" id="f-jreq-pills"></div>
             <div class="drop-label">Excluded inspector(s) — do not send</div>
             <div class="multi-pick" id="f-jexc-pills"></div>
-            <textarea id="f-jnotes" placeholder="Notes (client name, gate code, special instructions…)"></textarea>
             <button class="btn dark" id="add-job-btn">Add job</button>
           </div>
           <button class="btn green" id="assign-btn">Auto-assign all jobs</button>
@@ -552,17 +551,17 @@ function addInspector(){
 }
 
 function addJob(){
-  var addr=document.getElementById('f-jaddr').value.trim(), notes=document.getElementById('f-jnotes').value.trim();
+  var addr=document.getElementById('f-jaddr').value.trim();
   if(!addr){setStatus('Enter a job address.');return;}
   setStatus('Geocoding…');
   geocode(addr).then(function(loc){
     if(!loc){setStatus('Address not found. Try adding a zip code.');return;}
     var r={}; SVC.forEach(function(s){r[s]=document.getElementById('f-j-'+s).checked;});
     jobs.push({id:Date.now(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:curWin,
-      gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,notes:notes,
+      gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,
       requestedIds:curReqIds.slice(),excludedIds:curExcIds.slice(),
       assignedTo:null,distFromHome:null,certConflict:false,splitService:null,splitAssignedTo:null,splitDist:null});
-    document.getElementById('f-jaddr').value=''; document.getElementById('f-jnotes').value='';
+    document.getElementById('f-jaddr').value='';
     SVC.forEach(function(s){document.getElementById('f-j-'+s).checked=false; document.getElementById('pj-'+s).className='pill';});
     curWin='AM'; document.getElementById('wbtn-am').className='win-btn am'; document.getElementById('wbtn-pm').className='win-btn off';
     resetPills();
@@ -602,7 +601,7 @@ function saveEditJ(id){
   var j=jobs.find(function(x){return x.id===id;});
   function finish(loc){
     if(loc){j.lat=loc.lat;j.lng=loc.lng;j.display=loc.display;j.addr=addr;}
-    j.notes=notes;j.window=j._ew||j.window;
+    j.window=j._ew||j.window;
     SVC.forEach(function(s){j[s]=document.getElementById('ej-'+s+'-'+id).checked;});
     j.requestedIds=(editReqIds[id]||[]).slice();j.excludedIds=(editExcIds[id]||[]).slice();
     j.assignedTo=null;j.distFromHome=null;j.certConflict=false;j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;
@@ -838,7 +837,7 @@ function renderJobList(){
     var at=insp?'<span style="color:'+insp.color+';font-weight:600">'+insp.name+'</span>':'<span class="tag t-warn">unassigned</span>';
     var svcM=jobSvcMins(j,null);
     var eb=svcM?'<span class="est-badge svc">'+fmtMins(svcM)+'</span>':'';
-    return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+j.display+'</div>'+(j.notes?'<div class="jnote">'+j.notes+'</div>':'')+'<div class="jmeta">'+wt+st+rt+et+at+eb+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')">✎</button><button class="bicon red" onclick="removeJob('+j.id+')">×</button></div>';
+    return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+j.display+'</div><div class="jmeta">'+wt+st+rt+et+at+eb+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')">✎</button><button class="bicon red" onclick="removeJob('+j.id+')">×</button></div>';
   }).join('');
 }
 
@@ -902,7 +901,6 @@ function renderResults(){
           +'<div style="flex:1;min-width:0">'
             +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div>'
             +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+timerHtml+'</div>'
-            +(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')
             +(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')
             +'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div>'
           +'</div></div></div>';
@@ -914,7 +912,6 @@ function renderResults(){
           +'<div style="flex:1;min-width:0">'
             +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div>'
             +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="est-badge svc">'+fmtMins(SVC_MINS.sewer)+'</span></div>'
-            +(j.notes?'<div class="notes-disp">'+j.notes+'</div>':'')
             +(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')
           +'</div></div></div>';
       });
@@ -942,12 +939,10 @@ function buildExport(){
       wj.filter(function(j){return j.assignedTo===insp.id;}).forEach(function(j){
         var svcs=SVC.filter(function(s){return j[s]&&s!==j.splitService;}).map(function(s){return s.toUpperCase();}).join('+');
         var ln='  '+j.display+(svcs?' ['+svcs+']':'')+(j.certConflict?' ⚠ CERT CONFLICT':'');
-        if(j.notes) ln+='\n     Notes: '+j.notes;
         lines.push(ln);
       });
       wj.filter(function(j){return j.splitAssignedTo===insp.id;}).forEach(function(j){
         var ln='  '+j.display+' [SEWER]';
-        if(j.notes) ln+='\n     Notes: '+j.notes;
         lines.push(ln);
       });
       if(!lines.length) return;
