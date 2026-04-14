@@ -695,28 +695,56 @@ function runAssignment(){
       if(!pool.length) pool=inspectors.slice();
 
       // ── Gas+Sewer split logic ─────────────────────
-      // Only attempt split when the job needs both gas AND sewer
-      // and no single inspector in the pool is certified for both
+      // Consider splitting gas+sewer jobs if it improves balance
       if(job.gas && job.sewer){
         var dualPool=pool.filter(function(i){return i.gas&&i.sewer;});
-        if(!dualPool.length){
-          // No dual-certified inspector available — must split
-          var gasPool  =pool.filter(function(i){return i.gas;});
-          var sewPool  =pool.filter(function(i){return i.sewer;});
-          if(gasPool.length && sewPool.length){
-            // Pick the gas inspector and sewer inspector that minimise the HEAVIER of the two
-            var bestGas=gasPool.slice().sort(function(a,b){return projectedMins(a,job,false)-projectedMins(b,job,false);})[0];
-            var bestSew=sewPool.filter(function(i){return i.id!==bestGas.id;}).sort(function(a,b){return projectedMins(a,job,true)-projectedMins(b,job,true);})[0];
-            if(bestSew){
-              job.assignedTo=bestGas.id; job.distFromHome=hav(bestGas,job);
-              job.splitService='sewer'; job.splitAssignedTo=bestSew.id; job.splitDist=hav(bestSew,job);
-              assigned[bestGas.id].push(job); splits[bestSew.id].push(job);
-              return;
+        var gasPool=pool.filter(function(i){return i.gas;});
+        var sewPool=pool.filter(function(i){return i.sewer;});
+
+        var shouldSplit=false;
+        var bestGas=null, bestSew=null, bestDual=null;
+
+        // Find best single (dual-certified) assignment
+        if(dualPool.length){
+          bestDual=dualPool.slice().sort(function(a,b){return projectedMins(a,job,false)-projectedMins(b,job,false);})[0];
+        }
+
+        // Find best split assignment
+        if(gasPool.length && sewPool.length){
+          bestGas=gasPool.slice().sort(function(a,b){return projectedMins(a,job,false)-projectedMins(b,job,false);})[0];
+          bestSew=sewPool.filter(function(i){return i.id!==bestGas.id;}).sort(function(a,b){return projectedMins(a,job,true)-projectedMins(b,job,true);})[0];
+
+          if(!bestSew && gasPool.length>1){
+            bestSew=sewPool.sort(function(a,b){return projectedMins(a,job,true)-projectedMins(b,job,true);})[0];
+          }
+        }
+
+        // Decide: split vs single
+        if(bestGas && bestSew){
+          if(!bestDual){
+            // No dual available — must split
+            shouldSplit=true;
+          }else{
+            // Both options available — pick the one with better balance
+            var singleMax=projectedMins(bestDual,job,false);
+            var gasMax=projectedMins(bestGas,job,false);
+            var sewMax=projectedMins(bestSew,job,true);
+            var splitMax=Math.max(gasMax,sewMax);
+
+            if(splitMax < singleMax){
+              shouldSplit=true;
             }
           }
-          // If we still can't split cleanly, fall through to single assignment below
+        }else if(!bestDual && bestGas && bestSew){
+          shouldSplit=true;
         }
-        // Dual-certified inspectors exist — treat as normal cert-filtered assignment
+
+        if(shouldSplit && bestGas && bestSew){
+          job.assignedTo=bestGas.id; job.distFromHome=hav(bestGas,job);
+          job.splitService='sewer'; job.splitAssignedTo=bestSew.id; job.splitDist=hav(bestSew,job);
+          assigned[bestGas.id].push(job); splits[bestSew.id].push(job);
+          return;
+        }
       }
 
       // ── Standard cert-filtered assignment ────────
