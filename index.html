@@ -169,6 +169,12 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
               <label class="pill" id="pj-radon"><input type="checkbox" id="f-j-radon">Radon</label>
               <label class="pill" id="pj-mold"> <input type="checkbox" id="f-j-mold">Mold</label>
             </div>
+            <div class="drop-label">Property type</div>
+            <select id="f-j-proptype" style="width:100%;margin-bottom:8px;padding:6px;font-size:12px;border-radius:4px;border:1px solid #ddd">
+              <option value="single">Single Family</option>
+              <option value="duplex">Duplex</option>
+              <option value="multifamily">Multifamily</option>
+            </select>
             <div class="drop-label">Requested inspector(s)</div>
             <div class="multi-pick" id="f-jreq-pills"></div>
             <div class="drop-label">Excluded inspector(s) — do not send</div>
@@ -225,7 +231,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v12 — Balanced workload optimization (current)</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v13 — Property types & split reassignment (current)</div>
+          <div style="color:#888">Added property type selector (Single Family, Duplex, Multifamily) when creating jobs. Duplex and Multifamily now add 30 minutes to gas inspection time for more accurate estimates. Split gas+sewer jobs now show individual reassignment controls — reassign just the sewer portion to a different inspector without affecting the gas assignment.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v12 — Balanced workload optimization</div>
           <div style="color:#888">Fixed PM window assignment to consider full-day balance (AM + office + PM). Smarter midday break logic — chooses home or office based on distance from last AM job. Improved gas+sewer split to prefer splitting when requested jobs or light sewer inspectors would benefit. Better geocoding for St. Louis metro area. Added changelog modal window for cleaner export tab.</div>
         </div>
         <div style="margin-bottom:12px">
@@ -396,7 +406,10 @@ function certOk(i,j){ return SVC.every(function(s){return !j[s]||i[s];}); }
 // Service minutes for a job (radon+mold are concurrent, take the max)
 function jobSvcMins(job, skipSvc){
   var t=0;
-  if(job.gas   && skipSvc!=='gas')   t+=SVC_MINS.gas;
+  var gasMins=SVC_MINS.gas;
+  // Add 30 min to gas for duplex/multifamily
+  if(job.proptype==='duplex'||job.proptype==='multifamily') gasMins+=30;
+  if(job.gas   && skipSvc!=='gas')   t+=gasMins;
   if(job.sewer && skipSvc!=='sewer') t+=SVC_MINS.sewer;
   var radMold=0;
   if(job.radon && skipSvc!=='radon') radMold=Math.max(radMold,SVC_MINS.radon);
@@ -551,17 +564,17 @@ function addInspector(){
 }
 
 function addJob(){
-  var addr=document.getElementById('f-jaddr').value.trim();
+  var addr=document.getElementById('f-jaddr').value.trim(), proptype=document.getElementById('f-j-proptype').value;
   if(!addr){setStatus('Enter a job address.');return;}
   setStatus('Geocoding…');
   geocode(addr).then(function(loc){
     if(!loc){setStatus('Address not found. Try adding a zip code.');return;}
     var r={}; SVC.forEach(function(s){r[s]=document.getElementById('f-j-'+s).checked;});
     jobs.push({id:Date.now(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:curWin,
-      gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,
+      gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,proptype:proptype,
       requestedIds:curReqIds.slice(),excludedIds:curExcIds.slice(),
       assignedTo:null,distFromHome:null,certConflict:false,splitService:null,splitAssignedTo:null,splitDist:null});
-    document.getElementById('f-jaddr').value='';
+    document.getElementById('f-jaddr').value=''; document.getElementById('f-j-proptype').value='single';
     SVC.forEach(function(s){document.getElementById('f-j-'+s).checked=false; document.getElementById('pj-'+s).className='pill';});
     curWin='AM'; document.getElementById('wbtn-am').className='win-btn am'; document.getElementById('wbtn-pm').className='win-btn off';
     resetPills();
@@ -615,6 +628,14 @@ function manualOverride(jobId){
   if(newId){var i=inspectors.find(function(x){return x.id===newId;});j.assignedTo=newId;j.distFromHome=hav(i,j);j.splitAssignedTo=null;j.splitService=null;j.splitDist=null;j.certConflict=false;}
   else{j.assignedTo=null;j.distFromHome=null;}
   save();renderAll();setStatus('Assignment updated manually.');
+}
+
+function manualOverrideSplit(jobId){
+  var sel=document.getElementById('sr-'+jobId),newId=sel.value?+sel.value:null;
+  var j=jobs.find(function(x){return x.id===jobId;});if(!j)return;
+  if(newId){var i=inspectors.find(function(x){return x.id===newId;});j.splitAssignedTo=newId;j.splitDist=hav(i,j);}
+  else{j.splitAssignedTo=null;j.splitDist=null;}
+  save();renderAll();setStatus('Split assignment updated manually.');
 }
 
 // ══════════════════════════════════════════════════════
@@ -907,12 +928,14 @@ function renderResults(){
       });
       mySp.forEach(function(j){
         jobNum++;
+        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.splitAssignedTo===i.id?' selected':'')+'>'+i.name+(i.unavailable?' ⊘':'')+'</option>';}).join('');
         html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start">'
           +'<span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span>'
           +'<div style="flex:1;min-width:0">'
-            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div>'
+            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+' <span style="color:#888;font-weight:400">(sewer only)</span></div>'
             +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="est-badge svc">'+fmtMins(SVC_MINS.sewer)+'</span></div>'
             +(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')
+            +'<div class="or-row"><select id="sr-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverrideSplit('+j.id+')">Reassign</button></div>'
           +'</div></div></div>';
       });
       html+='</div></div>';
