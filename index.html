@@ -181,7 +181,14 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
             <div class="multi-pick" id="f-jexc-pills"></div>
             <button class="btn dark" id="add-job-btn">Add job</button>
           </div>
-          <button class="btn green" id="assign-btn">Auto-assign all jobs</button>
+          <div style="margin-top:16px;padding:12px;background:#f9f9f9;border-radius:8px;border:1px solid #e5e5e5">
+            <div class="sec-title" style="margin:0 0 8px 0">Import Salesforce Schedule</div>
+            <div style="font-size:11px;color:#666;margin-bottom:8px">Paste your Salesforce schedule. Will extract Team Radon, Team Sewer, and Team Gas jobs, combining services by address.</div>
+            <textarea id="import-schedule" placeholder="Paste Salesforce schedule here..." style="width:100%;min-height:100px;padding:8px;font-size:11px;font-family:monospace;border:1px solid #ddd;border-radius:4px;margin-bottom:8px"></textarea>
+            <button class="btn dark" id="import-btn" style="width:100%">Import Schedule</button>
+            <div id="import-result" style="margin-top:8px;font-size:11px;color:#666"></div>
+          </div>
+          <button class="btn green" id="assign-btn" style="margin-top:16px">Auto-assign all jobs</button>
           <button class="btn" id="unassign-btn" style="margin-top:4px;color:#b91c1c;border-color:#fca5a5;">Unassign all</button>
         </div>
       </div>
@@ -231,8 +238,8 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v13 — Property types & split reassignment (current)</div>
-          <div style="color:#888">Added property type selector (Single Family, Duplex, Multifamily) when creating jobs. Duplex and Multifamily now add 30 minutes to gas inspection time for more accurate estimates. Split gas+sewer jobs now show individual reassignment controls — reassign just the sewer portion to a different inspector without affecting the gas assignment.</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v13 — Property types, split reassignment & bulk import (current)</div>
+          <div style="color:#888">Added property type selector (Single Family, Duplex, Multifamily) when creating jobs. Duplex and Multifamily now add 30 minutes to gas inspection time for more accurate estimates. Split gas+sewer jobs now show individual reassignment controls — reassign just the sewer portion to a different inspector without affecting the gas assignment. Bulk import feature lets you paste Salesforce schedules directly — automatically extracts Team Radon, Team Sewer, and Team Gas jobs, combines duplicate addresses into single jobs with multiple services, and determines AM/PM windows based on job time slots.</div>
         </div>
         <div style="margin-bottom:12px">
           <div style="font-weight:600;color:#111;margin-bottom:2px">v12 — Balanced workload optimization</div>
@@ -341,6 +348,7 @@ window.addEventListener('load', function(){
   document.getElementById('clear-jobs-btn').addEventListener('click',function(){ jobs=[]; save(); renderAll(); setStatus('Jobs cleared.'); });
   document.getElementById('copy-btn').addEventListener('click', copyExport);
   document.getElementById('set-office-btn').addEventListener('click', setOffice);
+  document.getElementById('import-btn').addEventListener('click', importSchedule);
 
   renderAll(); renderOffice();
 });
@@ -580,6 +588,82 @@ function addJob(){
     resetPills();
     save(); renderAll(); setStatus('Job added — '+jobs.length+' total.');
   });
+}
+
+function importSchedule(){
+  var text=document.getElementById('import-schedule').value.trim();
+  if(!text){setStatus('Paste schedule first.');return;}
+
+  var lines=text.split('\n');
+  var parsed={}; // group by address
+  var i=0;
+
+  while(i<lines.length){
+    var line=lines[i].trim();
+
+    // Look for Inspector: Team line
+    if(line.indexOf('Inspector: Team')===0){
+      var teamMatch=line.match(/Inspector: Team (Radon|Sewer|Gas)/);
+      if(teamMatch){
+        var service=teamMatch[1].toLowerCase();
+        // Backtrack to find address (usually 2-3 lines up)
+        var addr='', time='';
+        for(var j=i-1;j>=Math.max(0,i-8);j--){
+          var prevLine=lines[j].trim();
+          if(prevLine.match(/^\d+.*[A-Z][a-z].*\d{5}/) || prevLine.match(/\d+.*[A-Z].*Drive|Street|Avenue|Lane|Road|Court|Way/)){
+            addr=prevLine;
+            break;
+          }
+        }
+        for(var j=i-1;j>=Math.max(0,i-8);j--){
+          var prevLine=lines[j].trim();
+          if(prevLine.match(/^\d{1,2}:\d{2}\s(AM|PM)/)){
+            time=prevLine;
+            break;
+          }
+        }
+
+        if(addr){
+          if(!parsed[addr]) parsed[addr]={addr:addr,gas:false,sewer:false,radon:false,mold:false,time:time};
+          if(service==='gas') parsed[addr].gas=true;
+          if(service==='sewer') parsed[addr].sewer=true;
+          if(service==='radon') parsed[addr].radon=true;
+        }
+      }
+    }
+    i++;
+  }
+
+  var addedCount=0;
+  Object.keys(parsed).forEach(function(addr){
+    var job=parsed[addr];
+    var window='AM';
+    if(job.time){
+      var timeMatch=job.time.match(/(\d{1,2}):(\d{2})\s(AM|PM)/);
+      if(timeMatch){
+        var hour=parseInt(timeMatch[1]);
+        var ampm=timeMatch[3];
+        if((ampm==='PM' && hour!==12) || (ampm==='AM' && hour===12)) hour+=12;
+        if(hour>=12) window='PM';
+      }
+    }
+
+    setStatus('Geocoding '+addr+'…');
+    geocode(addr).then(function(loc){
+      if(loc){
+        jobs.push({id:Date.now()+Math.random(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:window,
+          gas:job.gas,sewer:job.sewer,radon:job.radon,mold:job.mold,proptype:'single',
+          requestedIds:[],excludedIds:[],
+          assignedTo:null,distFromHome:null,certConflict:false,splitService:null,splitAssignedTo:null,splitDist:null});
+        save(); renderAll();
+      }
+    });
+    addedCount++;
+  });
+
+  document.getElementById('import-schedule').value='';
+  document.getElementById('import-result').innerHTML='<span style="color:#0F6E56">✓ Imported '+addedCount+' unique location(s). Geocoding in progress…</span>';
+  setStatus('Imported '+addedCount+' location(s).');
 }
 
 // ── Edit / remove helpers ─────────────────────────────
