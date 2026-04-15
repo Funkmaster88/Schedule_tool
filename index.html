@@ -596,69 +596,78 @@ function importSchedule(){
 
   var lines=text.split('\n');
   var parsed={}; // group by address
-  var i=0;
 
-  while(i<lines.length){
+  for(var i=0;i<lines.length;i++){
     var line=lines[i].trim();
 
-    // Look for Inspector: Team line
-    if(line.indexOf('Inspector: Team')===0){
-      var teamMatch=line.match(/Inspector: Team (Radon|Sewer|Gas)/);
-      if(teamMatch){
-        var service=teamMatch[1].toLowerCase();
-        // Backtrack to find address (usually 2-3 lines up)
-        var addr='', time='';
-        for(var j=i-1;j>=Math.max(0,i-8);j--){
-          var prevLine=lines[j].trim();
-          if(prevLine.match(/^\d+.*[A-Z][a-z].*\d{5}/) || prevLine.match(/\d+.*[A-Z].*Drive|Street|Avenue|Lane|Road|Court|Way/)){
-            addr=prevLine;
-            break;
-          }
+    // Look for time slot: "HH:MM AM - HH:MM AM  Status"
+    var timeMatch=line.match(/^(\d{1,2}):(\d{2})\s(AM|PM)\s*-\s*\d{1,2}:\d{2}\s(AM|PM)/);
+    if(timeMatch){
+      var startHour=parseInt(timeMatch[1]);
+      var startAMPM=timeMatch[3];
+      var endAMPM=timeMatch[4];
+
+      // Determine if AM or PM based on START time
+      var window='AM';
+      if(startAMPM==='PM' || (startHour===12 && startAMPM==='AM')) window='PM';
+
+      // Look forward for address (usually next 5 lines)
+      var addr='', time=line;
+      for(var j=i+1;j<=i+5 && j<lines.length;j++){
+        var nextLine=lines[j].trim();
+        // Look for address pattern: number + street + city, zipcode
+        if(nextLine.match(/^\d+.*[A-Za-z].*\d{5}$/) || nextLine.match(/,\s+[A-Za-z\s]+,\s*\d{5}$/)){
+          addr=nextLine;
+          break;
         }
-        for(var j=i-1;j>=Math.max(0,i-8);j--){
-          var prevLine=lines[j].trim();
-          if(prevLine.match(/^\d{1,2}:\d{2}\s(AM|PM)/)){
-            time=prevLine;
-            break;
+      }
+
+      if(addr){
+        // Now look from address line forward for services
+        var gas=false, sewer=false, radon=false, mold=false;
+        for(var j=i;j<=i+15 && j<lines.length;j++){
+          var checkLine=lines[j].toLowerCase();
+          if(checkLine.indexOf('inspector: team gas')>=0) gas=true;
+          if(checkLine.indexOf('inspector: team sewer')>=0) sewer=true;
+          if(checkLine.indexOf('inspector: team radon')>=0) radon=true;
+          if(checkLine.indexOf('added services:')>=0){
+            if(checkLine.indexOf('gas')>=0) gas=true;
+            if(checkLine.indexOf('sewer')>=0) sewer=true;
+            if(checkLine.indexOf('radon')>=0) radon=true;
+            if(checkLine.indexOf('mold')>=0) mold=true;
           }
+          if(checkLine.indexOf('radon pickup')>=0 && j>i && j<i+3) radon=true;
+          // Stop scanning when we hit next time slot
+          if(j>i && lines[j].trim().match(/^\d{1,2}:\d{2}\s(AM|PM)/)) break;
         }
 
-        if(addr){
-          if(!parsed[addr]) parsed[addr]={addr:addr,gas:false,sewer:false,radon:false,mold:false,time:time};
-          if(service==='gas') parsed[addr].gas=true;
-          if(service==='sewer') parsed[addr].sewer=true;
-          if(service==='radon') parsed[addr].radon=true;
+        // Only add if we found at least one Team service
+        if(gas || sewer || radon){
+          if(!parsed[addr]) parsed[addr]={addr:addr,gas:false,sewer:false,radon:false,mold:false,window:window};
+          if(gas) parsed[addr].gas=true;
+          if(sewer) parsed[addr].sewer=true;
+          if(radon) parsed[addr].radon=true;
+          if(mold) parsed[addr].mold=true;
         }
       }
     }
-    i++;
   }
 
   var addedCount=0;
   Object.keys(parsed).forEach(function(addr){
     var job=parsed[addr];
-    var window='AM';
-    if(job.time){
-      var timeMatch=job.time.match(/(\d{1,2}):(\d{2})\s(AM|PM)/);
-      if(timeMatch){
-        var hour=parseInt(timeMatch[1]);
-        var ampm=timeMatch[3];
-        if((ampm==='PM' && hour!==12) || (ampm==='AM' && hour===12)) hour+=12;
-        if(hour>=12) window='PM';
-      }
-    }
+    addedCount++;
 
     setStatus('Geocoding '+addr+'…');
     geocode(addr).then(function(loc){
       if(loc){
-        jobs.push({id:Date.now()+Math.random(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:window,
+        jobs.push({id:Date.now()+Math.random(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:job.window,
           gas:job.gas,sewer:job.sewer,radon:job.radon,mold:job.mold,proptype:'single',
           requestedIds:[],excludedIds:[],
           assignedTo:null,distFromHome:null,certConflict:false,splitService:null,splitAssignedTo:null,splitDist:null});
         save(); renderAll();
       }
     });
-    addedCount++;
   });
 
   document.getElementById('import-schedule').value='';
