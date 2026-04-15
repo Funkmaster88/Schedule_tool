@@ -4,7 +4,11 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Pillar to Post — Dispatch Tool</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  #map { width: 100%; height: 100%; }
+  .gm-style-infowindow { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .pac-container { z-index: 1050; }
+</style>
 <style>
 html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fff; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -238,7 +242,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v13 — Property types, split reassignment & bulk import (current)</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v14 — Google Maps integration (current)</div>
+          <div style="color:#888">Replaced Leaflet with Google Maps for better map quality and features. Added Google Places Autocomplete to address inputs — eliminates typos and ensures accurate address matching. Upgraded geocoding to use Google Geocoding API for more reliable address-to-coordinates conversion. Integrated Distance Matrix API for future use in calculating actual road-based driving times. Improved markers with custom canvas-drawn icons for better visual clarity on the map.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v13 — Property types, split reassignment & bulk import</div>
           <div style="color:#888">Added property type selector (Single Family, Duplex, Multifamily) when creating jobs. Duplex and Multifamily now add 30 minutes to gas inspection time for more accurate estimates. Split gas+sewer jobs now show individual reassignment controls — reassign just the sewer portion to a different inspector without affecting the gas assignment. Bulk import feature lets you paste Salesforce schedules directly — automatically extracts Team Radon, Team Sewer, and Team Gas jobs, combines duplicate addresses into single jobs with multiple services, and determines AM/PM windows based on job time slots.</div>
         </div>
         <div style="margin-bottom:12px">
@@ -294,7 +302,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDmeD4fC5Lim-xeCOhVQli6EshpC6XOvCw&libraries=places,geometry"></script>
 <script>
 const COLORS = ['#1D9E75','#D85A30','#378ADD','#D4537E','#BA7517','#534AB7','#639922','#A32D2D'];
 const SVC = ['gas','sewer','radon','mold'];
@@ -320,10 +328,13 @@ function save(){
 
 // ── Boot ──────────────────────────────────────────────
 window.addEventListener('load', function(){
-  map = L.map('map').setView(STL, 11);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-    attribution:'© OpenStreetMap contributors © CARTO', subdomains:'abcd', maxZoom:19
-  }).addTo(map);
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: {lat: STL[0], lng: STL[1]},
+    zoom: 11,
+    mapTypeControl: false,
+    fullscreenControl: false,
+    streetViewControl: false
+  });
 
   try{
     var si=localStorage.getItem('ptp_i'), sj=localStorage.getItem('ptp_j'), so=localStorage.getItem('ptp_o');
@@ -350,6 +361,16 @@ window.addEventListener('load', function(){
   document.getElementById('set-office-btn').addEventListener('click', setOffice);
   document.getElementById('import-btn').addEventListener('click', importSchedule);
 
+  // Initialize Google Places Autocomplete
+  var autocompleteOptions={types:['geocode'],componentRestrictions:{country:'us'}};
+  new google.maps.places.Autocomplete(document.getElementById('f-office-addr'),autocompleteOptions);
+
+  // Note: Add more autocomplete fields here for job address inputs when needed
+  var jobAddrs=document.querySelectorAll('input[id*="addr"]');
+  jobAddrs.forEach(function(input){
+    if(input.id!=='f-office-addr') new google.maps.places.Autocomplete(input,autocompleteOptions);
+  });
+
   renderAll(); renderOffice();
 });
 
@@ -374,32 +395,44 @@ function renderOffice(){
 }
 
 // ── Geocode ───────────────────────────────────────────
+// Google Geocoder instance
+var geocoder=null;
+var distanceMatrixService=null;
 function geocode(addr){
-  var b=addr.trim();
-  var bClean=b.replace(/\s+(apt|unit|suite|ste|#)\s*\S+/i,'').trim();
-  var hasState=/\b(MO|Missouri|Saint Louis)\b/i.test(b);
-  var queries=[];
-  if(hasState){
-    queries=[b, bClean];
-  }else{
-    queries=[
-      b+', Missouri',
-      b+', St. Louis, MO',
-      bClean+', Missouri',
-      bClean+', St. Louis, MO'
-    ];
-  }
-  queries=queries.filter(function(q,i,a){return a.indexOf(q)===i;});
-  return tryQ(queries,0);
+  if(!geocoder) geocoder=new google.maps.Geocoder();
+  return new Promise(function(resolve){
+    geocoder.geocode({address: addr}, function(results, status){
+      if(status==='OK' && results&&results[0]){
+        var loc=results[0].geometry.location;
+        var display=results[0].formatted_address.split(',').slice(0,2).join(',').trim();
+        resolve({lat:loc.lat(),lng:loc.lng(),display:display});
+      }else{
+        resolve(null);
+      }
+    });
+  });
 }
-function tryQ(queries,idx){
-  if(idx>=queries.length) return Promise.resolve(null);
-  return fetch('https://nominatim.openstreetmap.org/search?format=json&q='+encodeURIComponent(queries[idx])+'&limit=1&countrycodes=us')
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d&&d[0]){ var p=d[0].display_name.split(','); return{lat:parseFloat(d[0].lat),lng:parseFloat(d[0].lon),display:p.slice(0,2).join(',').trim()}; }
-      return tryQ(queries,idx+1);
-    }).catch(function(){return tryQ(queries,idx+1);});
+// Calculate drive time between two locations using Distance Matrix API
+function getDriveMinutes(fromLat, fromLng, toLat, toLng){
+  if(!distanceMatrixService) distanceMatrixService=new google.maps.DistanceMatrixService();
+  return new Promise(function(resolve){
+    distanceMatrixService.getDistanceMatrix({
+      origins:[{lat:fromLat,lng:fromLng}],
+      destinations:[{lat:toLat,lng:toLng}],
+      travelMode:'DRIVING'
+    },function(response, status){
+      if(status==='OK'&&response.rows[0].elements[0].status==='OK'){
+        var durationSec=response.rows[0].elements[0].duration.value;
+        resolve(Math.ceil(durationSec/60));
+      }else{
+        // Fallback to haversine estimation
+        var R=3959; var dLat=((toLat-fromLat)*Math.PI)/180; var dLng=((toLng-fromLng)*Math.PI)/180;
+        var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos((fromLat*Math.PI)/180)*Math.cos((toLat*Math.PI)/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
+        var c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)); var miles=R*c;
+        resolve(Math.ceil((miles/45)*60));
+      }
+    });
+  });
 }
 
 // ── Math helpers ──────────────────────────────────────
@@ -1093,25 +1126,44 @@ function importSettings(){
 }
 
 function renderMap(){
-  layers.forEach(function(l){map.removeLayer(l);}); layers=[];
+  layers.forEach(function(l){l.setMap(null);}); layers=[];
+  var bounds=new google.maps.LatLngBounds(); var hasBounds=false;
   if(office){
-    var oi=L.divIcon({html:'<div style="width:16px;height:16px;border-radius:4px;background:#BA7517;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;font-size:9px;color:white;font-weight:700">O</div>',className:'',iconAnchor:[8,8]});
-    layers.push(L.marker([office.lat,office.lng],{icon:oi}).addTo(map).bindPopup('<b>Office / Midday Waypoint</b><br>'+office.display));
+    var om=new google.maps.Marker({position:{lat:office.lat,lng:office.lng},map:map,title:'Office',icon:'http://maps.google.com/mapfiles/kml/paddle/orange-circle.png'});
+    om.addListener('click',function(){new google.maps.InfoWindow({content:'<b>Office / Midday Waypoint</b><br>'+office.display}).open(map,om);});
+    layers.push(om); bounds.extend({lat:office.lat,lng:office.lng}); hasBounds=true;
   }
   inspectors.forEach(function(insp){
-    var icon=L.divIcon({html:'<div style="width:14px;height:14px;border-radius:50%;background:'+insp.color+';border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,.3);opacity:'+(insp.unavailable?.3:1)+'"></div>',className:'',iconAnchor:[7,7]});
-    layers.push(L.marker([insp.lat,insp.lng],{icon:icon}).addTo(map).bindPopup('<b>'+insp.name+'</b>'+(insp.unavailable?'<br><span style="color:#b91c1c;font-size:11px">Unavailable</span>':'')+'<br>Home base'));
+    var im=new google.maps.Marker({position:{lat:insp.lat,lng:insp.lng},map:map,title:insp.name,icon:createDotIcon(insp.color,insp.unavailable)});
+    im.addListener('click',function(){new google.maps.InfoWindow({content:'<b>'+insp.name+'</b>'+(insp.unavailable?'<br><span style="color:#b91c1c;font-size:11px">Unavailable</span>':'')+'<br>Home base'}).open(map,im);});
+    layers.push(im); bounds.extend({lat:insp.lat,lng:insp.lng}); hasBounds=true;
   });
   jobs.forEach(function(job,idx){
     var insp=inspectors.find(function(i){return i.id===job.assignedTo;}), color=insp?insp.color:'#888';
-    var icon=L.divIcon({html:'<div style="width:24px;height:24px;border-radius:50%;background:'+color+';border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:white;flex-direction:column;line-height:1.1">'+(idx+1)+'<span style="font-size:7px;opacity:.85">'+job.window+'</span></div>',className:'',iconAnchor:[12,12]});
+    var jm=new google.maps.Marker({position:{lat:job.lat,lng:job.lng},map:map,title:'Job '+(idx+1),icon:createJobIcon(color,idx+1,job.window)});
+    jm.addListener('click',function(){var si=job.splitAssignedTo?inspectors.find(function(i){return i.id===job.splitAssignedTo;}):null;new google.maps.InfoWindow({content:'<b>Job '+(idx+1)+' · '+job.window+'</b><br>'+job.display+(job.notes?'<br><i style="font-size:11px">'+job.notes+'</i>':'')+(insp?'<br>→ '+insp.name:'')+(si?'<br>+ '+si.name+' (sewer)':'')}).open(map,jm);});
+    layers.push(jm); bounds.extend({lat:job.lat,lng:job.lng}); hasBounds=true;
+    if(insp){var pl=new google.maps.Polyline({path:[{lat:insp.lat,lng:insp.lng},{lat:job.lat,lng:job.lng}],map:map,strokeColor:color,strokeWeight:2,strokeOpacity:0.4,geodesic:true});layers.push(pl);}
     var si=job.splitAssignedTo?inspectors.find(function(i){return i.id===job.splitAssignedTo;}):null;
-    layers.push(L.marker([job.lat,job.lng],{icon:icon}).addTo(map).bindPopup('<b>Job '+(idx+1)+' · '+job.window+'</b><br>'+job.display+(job.notes?'<br><i style="font-size:11px">'+job.notes+'</i>':'')+(insp?'<br>→ '+insp.name:'')+(si?'<br>+ '+si.name+' (sewer)':'')));
-    if(insp) layers.push(L.polyline([[insp.lat,insp.lng],[job.lat,job.lng]],{color:color,weight:1.5,opacity:.4,dashArray:'5,5'}).addTo(map));
-    if(si)   layers.push(L.polyline([[si.lat,si.lng],[job.lat,job.lng]],{color:si.color,weight:1.5,opacity:.3,dashArray:'3,6'}).addTo(map));
+    if(si){var pl2=new google.maps.Polyline({path:[{lat:si.lat,lng:si.lng},{lat:job.lat,lng:job.lng}],map:map,strokeColor:si.color,strokeWeight:1.5,strokeOpacity:0.3,geodesic:true});layers.push(pl2);}
   });
-  var pts=layers.filter(function(l){return l.getLatLng;});
-  if(pts.length>1){try{map.fitBounds(L.featureGroup(pts).getBounds().pad(.15));}catch(e){}}
+  if(hasBounds && jobs.length+inspectors.length>0){try{map.fitBounds(bounds);}catch(e){}}
+}
+function createDotIcon(color, unavailable){
+  var c=document.createElement('canvas'); c.width=14; c.height=14;
+  var ctx=c.getContext('2d'); ctx.fillStyle=color; ctx.globalAlpha=unavailable?0.3:1;
+  ctx.beginPath(); ctx.arc(7,7,7,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='white'; ctx.lineWidth=2.5; ctx.globalAlpha=1; ctx.stroke();
+  return {url:c.toDataURL(),scaledSize:new google.maps.Size(14,14),anchor:new google.maps.Point(7,7)};
+}
+function createJobIcon(color, num, win){
+  var c=document.createElement('canvas'); c.width=24; c.height=24;
+  var ctx=c.getContext('2d'); ctx.fillStyle=color;
+  ctx.beginPath(); ctx.arc(12,12,12,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='white'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='white'; ctx.font='700 9px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(num,12,10); ctx.font='700 7px sans-serif'; ctx.fillText(win,12,16);
+  return {url:c.toDataURL(),scaledSize:new google.maps.Size(24,24),anchor:new google.maps.Point(12,12)};
 }
 
 // ── Changelog modal ────────────────────────────────────
