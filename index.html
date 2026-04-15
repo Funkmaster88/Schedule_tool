@@ -656,31 +656,42 @@ function importSchedule(){
       }
 
       if(addr){
-        // Now look from address line forward for services
+        // Look for TEAM assignments OR individual inspector assignments
         var gas=false, sewer=false, radon=false, mold=false;
+        var hasTeamOrInsp=false;
         for(var j=i;j<=i+15 && j<lines.length;j++){
           var checkLine=lines[j].toLowerCase();
+          var inspLine=lines[j].trim();
+          // Match explicit Team assignments
           if(checkLine.indexOf('inspector: team gas')>=0) gas=true;
           if(checkLine.indexOf('inspector: team sewer')>=0) sewer=true;
           if(checkLine.indexOf('inspector: team radon')>=0) radon=true;
-          if(checkLine.indexOf('added services:')>=0){
-            if(checkLine.indexOf('gas')>=0) gas=true;
-            if(checkLine.indexOf('sewer')>=0) sewer=true;
-            if(checkLine.indexOf('radon')>=0) radon=true;
-            if(checkLine.indexOf('mold')>=0) mold=true;
+          // Also match individual inspector names: Stone, Stephen, Dave, John
+          if(inspLine.match(/Inspector:\s*(Stone|Stephen|Dave|John)\b/i)){
+            hasTeamOrInsp=true;
+            // Try to infer services from context before this line
+            for(var k=Math.max(0,j-10);k<j;k++){
+              var contextLine=lines[k].toLowerCase();
+              if(contextLine.indexOf('added services:')>=0 || contextLine.indexOf('radon pickup')>=0 || contextLine.indexOf('package')>=0){
+                if(contextLine.indexOf('gas')>=0) gas=true;
+                if(contextLine.indexOf('sewer')>=0) sewer=true;
+                if(contextLine.indexOf('radon')>=0) radon=true;
+              }
+            }
+            // If no services inferred, default to radon for now (most common for individual assignments)
+            if(!gas && !sewer && !radon) radon=true;
           }
-          if(checkLine.indexOf('radon pickup')>=0 && j>i && j<i+3) radon=true;
+          if(gas || sewer || radon) hasTeamOrInsp=true;
           // Stop scanning when we hit next time slot
           if(j>i && lines[j].trim().match(/^\d{1,2}:\d{2}\s(AM|PM)/)) break;
         }
 
-        // Only add if we found at least one Team service
-        if(gas || sewer || radon){
+        // Only add if we found at least one Team service or individual inspector
+        if(hasTeamOrInsp){
           if(!parsed[addr]) parsed[addr]={addr:addr,gas:false,sewer:false,radon:false,mold:false,window:window};
           if(gas) parsed[addr].gas=true;
           if(sewer) parsed[addr].sewer=true;
           if(radon) parsed[addr].radon=true;
-          if(mold) parsed[addr].mold=true;
         }
       }
     }
