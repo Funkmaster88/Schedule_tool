@@ -676,12 +676,13 @@ function importSchedule(){
                 if(contextLine.indexOf('gas')>=0) gas=true;
                 if(contextLine.indexOf('sewer')>=0) sewer=true;
                 if(contextLine.indexOf('radon')>=0) radon=true;
+                if(contextLine.indexOf('mold')>=0) mold=true;
               }
             }
             // If no services inferred, default to radon for now (most common for individual assignments)
-            if(!gas && !sewer && !radon) radon=true;
+            if(!gas && !sewer && !radon && !mold) radon=true;
           }
-          if(gas || sewer || radon) hasTeamOrInsp=true;
+          if(gas || sewer || radon || mold) hasTeamOrInsp=true;
           // Stop scanning when we hit next time slot
           if(j>i && lines[j].trim().match(/^\d{1,2}:\d{2}\s(AM|PM)/)) break;
         }
@@ -692,6 +693,7 @@ function importSchedule(){
           if(gas) parsed[addr].gas=true;
           if(sewer) parsed[addr].sewer=true;
           if(radon) parsed[addr].radon=true;
+          if(mold) parsed[addr].mold=true;
         }
       }
     }
