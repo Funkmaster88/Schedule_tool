@@ -116,6 +116,31 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 </style>
 </head>
 <body>
+<!-- API Key Setup Modal -->
+<div id="api-key-modal" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+  <div style="background:white;border-radius:12px;padding:40px;max-width:500px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.3)">
+    <h2 style="color:#111;margin-top:0;margin-bottom:8px">Google Maps API Key Required</h2>
+    <p style="color:#666;margin-bottom:20px;line-height:1.6">Route Planner needs your Google Maps API key to function. This key is stored <strong>only on your computer</strong> — never stored in code or sent to servers.</p>
+
+    <div style="background:#f0f5ff;border-left:4px solid #3b82f6;padding:12px;border-radius:4px;margin-bottom:20px;font-size:12px;color:#1e3a8a;line-height:1.5">
+      <strong>How to get your API key:</strong><br>
+      1. Go to <a href="https://console.cloud.google.com/" target="_blank" style="color:#3b82f6">Google Cloud Console</a><br>
+      2. Create a new project<br>
+      3. Enable: Maps JavaScript API, Places API, Geocoding API, Distance Matrix API<br>
+      4. Create an API key (Credentials → API Key)<br>
+      5. Set HTTP referrer restrictions to your domain
+    </div>
+
+    <input type="password" id="api-key-input" placeholder="Paste your Google Maps API key here" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;font-family:monospace;box-sizing:border-box">
+
+    <button onclick="saveApiKey()" style="display:block;width:100%;padding:10px;background:#0F6E56;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px">Save API Key</button>
+
+    <div style="font-size:11px;color:#888;text-align:center">
+      Your key is stored locally in your browser — never shared or logged
+    </div>
+  </div>
+</div>
+
 <div class="app">
   <div class="sidebar">
     <div class="sidebar-header">
@@ -242,7 +267,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v15 — Smart splits & real drive times (current)</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v16 — Secure API key input (current)</div>
+          <div style="color:#888">Removed hardcoded Google Maps API key from code for security. App now prompts users to enter their own API key on first load, stored securely in browser local storage. No API keys exposed in GitHub repository. Each user brings their own key, eliminating security risk. Clear setup modal with instructions on obtaining API key from Google Cloud Console.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v15 — Smart splits & real drive times</div>
           <div style="color:#888">Added transparency to split logic — now shows WHY each Gas+Sewer job was split (no dual-certified available, workload balance, etc.). Implemented post-assignment drive time refinement using Google Distance Matrix API for more accurate road-based times instead of straight-line estimates. Clarified that Radon and Mold are ALWAYS bonded together and never split. Improved Office/Midday Waypoint logic documentation — it chooses the closer location (home vs office) between AM and PM jobs for optimal routing.</div>
         </div>
         <div style="margin-bottom:12px">
@@ -306,7 +335,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
   </div>
 </div>
 
-<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDmeD4fC5Lim-xeCOhVQli6EshpC6XOvCw&libraries=places,geometry"></script>
+<!-- Google Maps API loaded dynamically after user provides key -->
 <script>
 const COLORS = ['#1D9E75','#D85A30','#378ADD','#D4537E','#BA7517','#534AB7','#639922','#A32D2D'];
 const SVC = ['gas','sewer','radon','mold'];
@@ -320,6 +349,59 @@ const STL = [38.627, -90.197];
 let map, inspectors=[], jobs=[], layers=[];
 let curWin='AM', editIId=null, editJId=null;
 var office=null;
+var googleApiKey=null;
+
+// Load API key from localStorage or show setup modal
+function initApiKey(){
+  googleApiKey=localStorage.getItem('google_api_key');
+  if(!googleApiKey){
+    document.getElementById('api-key-modal').style.display='flex';
+    document.getElementById('api-key-input').focus();
+  }else{
+    document.getElementById('api-key-modal').style.display='none';
+    loadGoogleMaps();
+  }
+}
+
+function saveApiKey(){
+  var key=document.getElementById('api-key-input').value.trim();
+  if(!key){alert('Please enter your API key.');return;}
+  if(key.length<20){alert('API key appears too short. Please check and try again.');return;}
+  localStorage.setItem('google_api_key',key);
+  googleApiKey=key;
+  document.getElementById('api-key-modal').style.display='none';
+  loadGoogleMaps();
+}
+
+function loadGoogleMaps(){
+  if(!googleApiKey) return;
+  var script=document.createElement('script');
+  script.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(googleApiKey)+'&libraries=places,geometry';
+  script.async=true;
+  script.defer=true;
+  script.onload=function(){
+    console.log('Google Maps loaded successfully');
+    initializeApp();
+  };
+  script.onerror=function(){
+    alert('Failed to load Google Maps. Please check your API key and try refreshing.');
+    document.getElementById('api-key-modal').style.display='flex';
+  };
+  document.head.appendChild(script);
+}
+
+function initializeApp(){
+  // Initialize map and other components after Google Maps loads
+  if(map) return; // Already initialized
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: {lat: STL[0], lng: STL[1]},
+    zoom: 11,
+    mapTypeControl: false,
+    fullscreenControl: false,
+    streetViewControl: false
+  });
+  renderAll(); renderOffice();
+}
 
 // ── Persistence ───────────────────────────────────────
 function save(){
@@ -332,13 +414,10 @@ function save(){
 
 // ── Boot ──────────────────────────────────────────────
 window.addEventListener('load', function(){
-  map = new google.maps.Map(document.getElementById('map'), {
-    center: {lat: STL[0], lng: STL[1]},
-    zoom: 11,
-    mapTypeControl: false,
-    fullscreenControl: false,
-    streetViewControl: false
-  });
+  initApiKey();
+
+  // If API key already loaded, map will be initialized by initializeApp()
+  // Otherwise, user will see the setup modal
 
   try{
     var si=localStorage.getItem('ptp_i'), sj=localStorage.getItem('ptp_j'), so=localStorage.getItem('ptp_o');
