@@ -1133,11 +1133,14 @@ function reassignService(jobId, service){
 //     - Workload balance
 //  3. Try to keep Gas + Sewer on same inspector (by default)
 // ══════════════════════════════════════════════════════
+var decisionLog=[]; // Track assignment reasoning
+
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
 
   // Reset all assignments to new service-based model
+  decisionLog=[]; // Reset decision log
   jobs.forEach(function(j){
     initServiceAssignments(j);
     SVC.forEach(function(s){j.serviceAssignments[s]=null;});
@@ -1186,17 +1189,38 @@ function runAssignment(){
       initServiceAssignments(job);
       var reqIds=job.requestedIds||[];
 
+      // Track reasoning for this job
+      var jobReasoning={address:job.display,window:win,decisions:[],notes:[]};
+
+      // Add notes for requests/exclusions
+      if(reqIds.length){
+        var reqNames=reqIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
+        jobReasoning.notes.push('🎯 Requested: '+reqNames.join(', '));
+      }
+      if(excIds.length){
+        var excNames=excIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
+        jobReasoning.notes.push('⛔ Excluded: '+excNames.join(', '));
+      }
+
       // Assign Gas
       if(job.gas){
         var gasPool=pool.filter(function(i){return i.gas;});
         if(!gasPool.length) gasPool=pool;
         var priorityPool=gasPool;
-        if(reqIds.length) priorityPool=gasPool.filter(function(i){return reqIds.indexOf(i.id)>=0;});
+        var requestHonored=false;
+        if(reqIds.length){
+          priorityPool=gasPool.filter(function(i){return reqIds.indexOf(i.id)>=0;});
+          if(priorityPool.length) requestHonored=true;
+        }
         if(!priorityPool.length) priorityPool=gasPool;
         var bestGas=priorityPool.slice().sort(function(a,b){
           return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
         })[0];
-        if(bestGas) job.serviceAssignments.gas=bestGas.id;
+        if(bestGas){
+          job.serviceAssignments.gas=bestGas.id;
+          var reason=requestHonored?'Request honored: assigned to '+bestGas.name:'Lightest available: '+bestGas.name+' (~'+fmtMins(calcInspectorWorkload(bestGas.id,win))+')';
+          jobReasoning.decisions.push({service:'Gas',inspector:bestGas.name,reason:reason});
+        }
       }
 
       // Assign Sewer (prefer same as Gas if possible)
@@ -1207,11 +1231,18 @@ function runAssignment(){
         var prefersame=job.serviceAssignments.gas && sewPool.some(function(i){return i.id===job.serviceAssignments.gas;});
         if(prefersame){
           job.serviceAssignments.sewer=job.serviceAssignments.gas;
+          var gasInsp=inspectors.find(function(i){return i.id===job.serviceAssignments.gas;});
+          jobReasoning.decisions.push({service:'Sewer',inspector:gasInsp.name,reason:'Kept with Gas to minimize inspectors per location'});
         }else{
           var bestSew=sewPool.slice().sort(function(a,b){
             return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
           })[0];
-          if(bestSew) job.serviceAssignments.sewer=bestSew.id;
+          if(bestSew){
+            job.serviceAssignments.sewer=bestSew.id;
+            var gasInsp=job.serviceAssignments.gas?inspectors.find(function(i){return i.id===job.serviceAssignments.gas;}):null;
+            var reason=gasInsp?'Sewer specialist available (Gas on '+gasInsp.name+', sewer lighter)':'Lightest available: '+bestSew.name;
+            jobReasoning.decisions.push({service:'Sewer',inspector:bestSew.name,reason:reason});
+          }
         }
       }
 
@@ -1227,8 +1258,14 @@ function runAssignment(){
         if(bestRM){
           if(job.radon) job.serviceAssignments.radon=bestRM.id;
           if(job.mold) job.serviceAssignments.mold=bestRM.id;
+          var svcs=[];
+          if(job.radon) svcs.push('Radon');
+          if(job.mold) svcs.push('Mold');
+          jobReasoning.decisions.push({service:svcs.join('+'),inspector:bestRM.name,reason:'Always bonded together. Lightest available: '+bestRM.name});
         }
       }
+
+      if(jobReasoning.decisions.length) decisionLog.push(jobReasoning);
     });
   });
 
@@ -1361,6 +1398,28 @@ function renderResults(){
 
   var offBanner=office?'<div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:6px 10px;font-size:11px;color:#854F0B;margin-bottom:8px;">Midday waypoint: '+escapeHtml(office.display)+'</div>':'';
   var html=offBanner;
+
+  // NEW: Decision Log section
+  if(decisionLog.length){
+    html+='<div style="margin-bottom:16px;background:#f0f7ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">';
+    html+='<div style="font-weight:600;color:#0369a1;margin-bottom:10px;font-size:12px;">📋 Assignment Logic</div>';
+    decisionLog.forEach(function(entry){
+      html+='<div style="font-size:11px;margin-bottom:10px;padding:8px;background:white;border-radius:4px;border-left:3px solid #0ea5e9;">';
+      html+='<div style="font-weight:600;color:#111;margin-bottom:4px;">'+escapeHtml(entry.address)+' ('+entry.window+')</div>';
+      if(entry.notes.length){
+        entry.notes.forEach(function(note){
+          html+='<div style="margin-left:12px;margin-bottom:2px;color:#d97706;font-size:10px;">'+escapeHtml(note)+'</div>';
+        });
+      }
+      entry.decisions.forEach(function(dec){
+        html+='<div style="margin-left:12px;margin-bottom:3px;color:#555;">';
+        html+='<span style="font-weight:500">'+dec.service+':</span> '+escapeHtml(dec.inspector)+' — '+escapeHtml(dec.reason);
+        html+='</div>';
+      });
+      html+='</div>';
+    });
+    html+='</div>';
+  }
 
   // NEW: Display routes for each inspector
   ['AM','PM'].forEach(function(win){
