@@ -349,6 +349,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 const COLORS = ['#1D9E75','#D85A30','#378ADD','#D4537E','#BA7517','#534AB7','#639922','#A32D2D'];
 const SVC = ['gas','sewer','radon','mold'];
 const SVC_CLS = {gas:'g',sewer:'sw',radon:'r',mold:'m'};
+const SVC_CLS_COLOR = {gas:'#EF9F27',sewer:'#1D9E75',radon:'#7F77DD',mold:'#D85A30'};
 // Base service time in minutes per service type
 const SVC_MINS = {gas:45, sewer:60, radon:10, mold:15};
 // Average drive speed for St. Louis metro
@@ -463,6 +464,8 @@ window.addEventListener('load', function(){
     if(si) inspectors=JSON.parse(si);
     if(sj) jobs=JSON.parse(sj);
     if(so) office=JSON.parse(so);
+    // Migrate old data format to new service assignments
+    if(jobs && jobs.length) jobs.forEach(migrateToServiceAssignments);
   }catch(e){ inspectors=[]; jobs=[]; office=null; }
 
   SVC.forEach(function(s){
@@ -607,6 +610,161 @@ function hav(a,b){
 }
 function driveMins(distMi){ return Math.round(distMi/DRIVE_MPH*60); }
 function certOk(i,j){ return SVC.every(function(s){return !j[s]||i[s];}); }
+
+// ── NEW: Service-level assignment helpers ─────────────
+// Initialize serviceAssignments structure for a job
+function initServiceAssignments(job){
+  if(!job.serviceAssignments){
+    job.serviceAssignments={
+      gas: null, sewer: null, radon: null, mold: null
+    };
+  }
+}
+
+// Get all assigned inspectors for a job's services
+function getJobInspectors(job){
+  initServiceAssignments(job);
+  var inspectors_set=new Set();
+  SVC.forEach(function(s){
+    if(job[s] && job.serviceAssignments[s]) inspectors_set.add(job.serviceAssignments[s]);
+  });
+  return Array.from(inspectors_set);
+}
+
+// Assign a specific service to an inspector
+function assignService(job, service, inspectorId){
+  initServiceAssignments(job);
+  if(job[service]) job.serviceAssignments[service]=inspectorId;
+}
+
+// Get assigned inspector for a specific service
+function getServiceAssignedTo(job, service){
+  initServiceAssignments(job);
+  return job[service] ? job.serviceAssignments[service] : null;
+}
+
+// Check if an inspector has any jobs assigned in a window
+function inspectorHasJobsInWindow(inspId, window){
+  return jobs.some(function(j){
+    if(j.window!==window) return false;
+    initServiceAssignments(j);
+    return SVC.some(function(s){
+      return j[s] && j.serviceAssignments[s]===inspId;
+    });
+  });
+}
+
+// ── NEW: Route optimization (nearest-neighbor TSP) ────
+// Calculate optimal job order for an inspector in a window using nearest-neighbor
+function calculateOptimalRoute(inspId, window){
+  var route=[];
+  var jobsForInsp=jobs.filter(function(j){
+    if(j.window!==window) return false;
+    initServiceAssignments(j);
+    return SVC.some(function(s){return j[s] && j.serviceAssignments[s]===inspId;});
+  });
+
+  if(!jobsForInsp.length) return route;
+
+  var insp=inspectors.find(function(i){return i.id===inspId;});
+  if(!insp) return jobsForInsp;
+
+  // Nearest-neighbor: start at home, always pick closest unvisited job
+  var unvisited=jobsForInsp.slice();
+  var current=insp;
+
+  while(unvisited.length){
+    var nearest=null, nearestDist=Infinity;
+    unvisited.forEach(function(job){
+      var d=hav(current, job);
+      if(d<nearestDist){nearestDist=d; nearest=job;}
+    });
+    if(nearest){
+      route.push(nearest);
+      unvisited.splice(unvisited.indexOf(nearest), 1);
+      current=nearest;
+    }else{
+      break;
+    }
+  }
+
+  return route;
+}
+
+// Build route display string for an inspector (AM or PM)
+function buildRouteDisplay(inspId, window){
+  var route=calculateOptimalRoute(inspId, window);
+  if(!route.length) return '';
+
+  var insp=inspectors.find(function(i){return i.id===inspId;});
+  if(!insp) return '';
+
+  var lines=['<div style="font-size:11px;color:#555;margin-top:8px;padding:8px;background:#f9f9f9;border-radius:4px;border-left:2px solid '+insp.color+'">'];
+
+  // Start point
+  var current=insp;
+  lines.push('<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px;font-weight:600">📍 '+escapeHtml(insp.name)+' <span style="color:#aaa;font-weight:400;font-size:10px">(home)</span></div>');
+
+  // Route steps
+  route.forEach(function(job, idx){
+    var d=hav(current, job);
+    var mins=driveMins(d);
+    var svcs=SVC.filter(function(s){
+      return job[s] && getServiceAssignedTo(job, s)===inspId;
+    }).map(function(s){return s.toUpperCase();}).join('+');
+
+    lines.push('<div style="display:flex;gap:6px;align-items:center;margin-left:12px;margin-bottom:2px">');
+    lines.push('<span style="color:#aaa;font-size:10px">↓ '+mins+'m</span>');
+    lines.push('<span style="font-weight:500">'+escapeHtml(job.display)+'</span>');
+    if(svcs) lines.push('<span style="font-size:9px;color:#666">['+svcs+']</span>');
+    lines.push('</div>');
+
+    current=job;
+  });
+
+  // End point
+  var endDist=hav(current, insp);
+  var endMins=driveMins(endDist);
+  var endPoint=office && jobs.some(function(j){return j.window===window&&j.window!=='AM'?'PM':'AM';})?office:insp;
+  var endLabel=office && endPoint.id?'office':insp.name;
+
+  lines.push('<div style="display:flex;gap:4px;align-items:center;margin-left:12px;margin-top:4px;font-weight:600">');
+  lines.push('<span style="color:#aaa;font-size:10px">↓ '+endMins+'m</span>');
+  lines.push('<span>📍 '+escapeHtml(endLabel)+'</span>');
+  lines.push('</div>');
+
+  lines.push('</div>');
+  return lines.join('');
+}
+
+// Migrate old data format to new service assignments
+function migrateToServiceAssignments(job){
+  if(job.serviceAssignments) return; // Already migrated
+
+  job.serviceAssignments={gas: null, sewer: null, radon: null, mold: null};
+
+  // Old format: assignedTo + splitService/splitAssignedTo
+  if(job.assignedTo){
+    // Assign all services to main inspector
+    if(job.gas) job.serviceAssignments.gas=job.assignedTo;
+    if(job.sewer && !job.splitService) job.serviceAssignments.sewer=job.assignedTo;
+    if(job.radon) job.serviceAssignments.radon=job.assignedTo;
+    if(job.mold) job.serviceAssignments.mold=job.assignedTo;
+  }
+
+  // If sewer was split, assign to split inspector
+  if(job.splitService==='sewer' && job.splitAssignedTo && job.sewer){
+    job.serviceAssignments.sewer=job.splitAssignedTo;
+  }
+
+  // Clean up old fields
+  delete job.assignedTo;
+  delete job.distFromHome;
+  delete job.splitService;
+  delete job.splitAssignedTo;
+  delete job.splitDist;
+  delete job.splitReason;
+}
 
 // Service minutes for a job (radon+mold are concurrent, take the max)
 function jobSvcMins(job, skipSvc){
@@ -775,10 +933,11 @@ function addJob(){
   geocode(addr).then(function(loc){
     if(!loc){setStatus('Address not found. Try adding a zip code.');return;}
     var r={}; SVC.forEach(function(s){r[s]=document.getElementById('f-j-'+s).checked;});
-    jobs.push({id:Date.now(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:curWin,
+    var newJob={id:Date.now(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:curWin,
       gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,proptype:proptype,
       requestedIds:curReqIds.slice(),excludedIds:curExcIds.slice(),
-      assignedTo:null,distFromHome:null,certConflict:false,splitService:null,splitAssignedTo:null,splitDist:null});
+      serviceAssignments:{gas:null,sewer:null,radon:null,mold:null}};
+    jobs.push(newJob);
     document.getElementById('f-jaddr').value=''; document.getElementById('f-j-proptype').value='single';
     SVC.forEach(function(s){document.getElementById('f-j-'+s).checked=false; document.getElementById('pj-'+s).className='pill';});
     curWin='AM'; document.getElementById('wbtn-am').className='win-btn am'; document.getElementById('wbtn-pm').className='win-btn off';
@@ -890,10 +1049,14 @@ function toggleUnavail(id){ var i=inspectors.find(function(x){return x.id===id;}
 function removeInsp(id){
   inspectors=inspectors.filter(function(i){return i.id!==id;});
   jobs.forEach(function(j){
-    if(j.assignedTo===id){j.assignedTo=null;j.distFromHome=null;}
+    // Handle new service assignments
+    initServiceAssignments(j);
+    SVC.forEach(function(s){if(j.serviceAssignments[s]===id) j.serviceAssignments[s]=null;});
+    // Clean up old fields for backward compatibility
+    if(j.assignedTo===id) j.assignedTo=null;
+    if(j.splitAssignedTo===id) j.splitAssignedTo=null;
     j.requestedIds=(j.requestedIds||[]).filter(function(x){return x!==id;});
     j.excludedIds=(j.excludedIds||[]).filter(function(x){return x!==id;});
-    if(j.splitAssignedTo===id){j.splitAssignedTo=null;j.splitService=null;j.splitDist=null;}
   });
   save(); renderAll();
 }
@@ -918,207 +1081,187 @@ function saveEditJ(id){
   function finish(loc){
     if(loc){j.lat=loc.lat;j.lng=loc.lng;j.display=loc.display;j.addr=addr;}
     j.window=j._ew||j.window;
+    var oldServices={}; SVC.forEach(function(s){oldServices[s]=j[s];});
     SVC.forEach(function(s){j[s]=document.getElementById('ej-'+s+'-'+id).checked;});
     j.requestedIds=(editReqIds[id]||[]).slice();j.excludedIds=(editExcIds[id]||[]).slice();
-    j.assignedTo=null;j.distFromHome=null;j.certConflict=false;j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;
+    // Reset assignments when services change
+    initServiceAssignments(j);
+    SVC.forEach(function(s){
+      if(!j[s]) j.serviceAssignments[s]=null;
+      else if(!oldServices[s]) j.serviceAssignments[s]=null; // Service was just added, reset assignment
+    });
     delete j._ew;editJId=null;delete editReqIds[id];delete editExcIds[id];save();renderAll();setStatus('Job updated.');
   }
   if(addr!==j.addr){setStatus('Geocoding…');geocode(addr).then(function(loc){if(!loc){setStatus('Address not found.');return;}finish(loc);});}else finish(null);
 }
-function manualOverride(jobId){
-  var sel=document.getElementById('or-'+jobId),newId=sel.value?+sel.value:null;
-  var j=jobs.find(function(x){return x.id===jobId;});if(!j)return;
-  if(newId){var i=inspectors.find(function(x){return x.id===newId;});j.assignedTo=newId;j.distFromHome=hav(i,j);j.splitAssignedTo=null;j.splitService=null;j.splitDist=null;j.certConflict=false;}
-  else{j.assignedTo=null;j.distFromHome=null;}
-  save();renderAll();setStatus('Assignment updated manually.');
-}
+// NEW: Reassign a specific service to a different inspector
+function reassignService(jobId, service){
+  var selId='ors-'+jobId+'-'+service;
+  var sel=document.getElementById(selId);
+  if(!sel) return;
+  var newId=sel.value?+sel.value:null;
+  var j=jobs.find(function(x){return x.id===jobId;});
+  if(!j) return;
 
-function manualOverrideSplit(jobId){
-  var sel=document.getElementById('sr-'+jobId),newId=sel.value?+sel.value:null;
-  var j=jobs.find(function(x){return x.id===jobId;});if(!j)return;
-  if(newId){var i=inspectors.find(function(x){return x.id===newId;});j.splitAssignedTo=newId;j.splitDist=hav(i,j);}
-  else{j.splitAssignedTo=null;j.splitDist=null;}
-  save();renderAll();setStatus('Split assignment updated manually.');
+  initServiceAssignments(j);
+  if(newId){
+    var i=inspectors.find(function(x){return x.id===newId;});
+    if(!i || (service==='gas'&&!i.gas) || (service==='sewer'&&!i.sewer) || ((service==='radon'||service==='mold')&&!i[service])){
+      setStatus('Inspector not certified for '+service+'.');
+      return;
+    }
+    j.serviceAssignments[service]=newId;
+  }else{
+    j.serviceAssignments[service]=null;
+  }
+  save();renderAll();setStatus(service.charAt(0).toUpperCase()+service.slice(1)+' reassigned.');
 }
 
 // ══════════════════════════════════════════════════════
-// AUTO-ASSIGN — TIME-BALANCED GREEDY
+// AUTO-ASSIGN — PER-SERVICE TIME-BALANCED GREEDY
 //
-// Core idea: instead of counting jobs, we track estimated
-// minutes per inspector and always assign the next job to
-// whoever has the LIGHTEST workload so far (in minutes),
-// subject to cert requirements and exclusions.
+// NEW: Service-level assignment. Each service (Gas, Sewer,
+// Radon, Mold) is assigned independently to inspectors.
+// Gas and Sewer prefer to stay together but can split if needed.
+// Radon and Mold are always bonded together.
 //
 // Order of operations per window:
-//  1. Lock in requested-inspector jobs first
-//  2. For each remaining job, score every eligible inspector
-//     by: (their current total mins) + (marginal mins this job adds)
-//     Pick the inspector with the lowest resulting total.
-//  3. Gas+Sewer split: only triggered when no single inspector
-//     can do both AND splitting produces a better time balance.
+//  1. Reset all service assignments
+//  2. Assign each service individually, respecting:
+//     - Certification requirements
+//     - Inspector availability
+//     - Workload balance
+//  3. Try to keep Gas + Sewer on same inspector (by default)
 // ══════════════════════════════════════════════════════
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
 
-  // Reset all assignments
+  // Reset all assignments to new service-based model
   jobs.forEach(function(j){
-    j.assignedTo=null;j.distFromHome=null;j.certConflict=false;
-    j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;j.splitReason=null;
+    initServiceAssignments(j);
+    SVC.forEach(function(s){j.serviceAssignments[s]=null;});
   });
 
-  // Live tracking: primary assigned jobs and split (sewer-add-on) jobs per inspector
-  // Initialized ONCE, NOT per window, so PM assignments consider AM load
-  var assigned={}, splits={};
-  inspectors.forEach(function(i){assigned[i.id]=[]; splits[i.id]=[];});
+  // NEW: Track workload per inspector across all services
+  var svcAssigned={}; // svcAssigned[inspId] = array of jobs with services assigned
+  inspectors.forEach(function(i){svcAssigned[i.id]=[];});
 
+  // NEW: Helper to calculate current workload for an inspector
+  function calcInspectorWorkload(inspId, window){
+    var winJobs=jobs.filter(function(j){
+      if(j.window!==window) return false;
+      initServiceAssignments(j);
+      return SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===inspId;});
+    });
+    return winJobs.reduce(function(total, j){
+      var svcMins=0;
+      SVC.forEach(function(s){
+        if(j[s] && j.serviceAssignments[s]===inspId){
+          if(s==='gas' && (j.proptype==='duplex'||j.proptype==='multifamily')) svcMins+=SVC_MINS.gas+30;
+          else if(s==='sewer') svcMins+=SVC_MINS.sewer;
+          else if(s==='radon'||s==='mold') svcMins=Math.max(svcMins, s==='radon'?SVC_MINS.radon:SVC_MINS.mold);
+          else svcMins+=SVC_MINS[s]||0;
+        }
+      });
+      return total+svcMins;
+    }, 0);
+  }
+
+  // Process jobs by window
   ['AM','PM'].forEach(function(win){
     var wj=jobs.filter(function(j){return j.window===win;});
     if(!wj.length) return;
 
     var avail=inspectors.filter(function(i){return !i.unavailable;});
-    if(!avail.length) avail=inspectors.slice(); // fallback: use everyone
+    if(!avail.length) avail=inspectors.slice();
 
-    // Helper: current estimated total minutes for an inspector (THIS WINDOW ONLY)
-    function currentMins(insp){
-      var winAssigned = assigned[insp.id].filter(function(j){return j.window===win;});
-      var winSplits = splits[insp.id].filter(function(j){return j.window===win;});
-      return inspTotalMins(insp, winAssigned, winSplits);
-    }
-
-    // Helper: estimated total if we add this job to this inspector (THIS WINDOW ONLY)
-    function projectedMins(insp, job, asSplit){
-      var winAssigned = assigned[insp.id].filter(function(j){return j.window===win;});
-      var winSplits = splits[insp.id].filter(function(j){return j.window===win;});
-      var newAssigned = asSplit ? winAssigned.slice() : winAssigned.concat([job]);
-      var newSplits   = asSplit ? winSplits.concat([job]) : winSplits.slice();
-      return inspTotalMins(insp, newAssigned, newSplits);
-    }
-
-    // ── Step 1: Honor requested inspectors ───────────
+    // ── Assign each job's services ─────────────────
     wj.forEach(function(job){
-      var reqIds=job.requestedIds||[];
-      if(!reqIds.length) return;
-      // From requested inspectors, pick the one with lightest load
-      var candidates=reqIds.map(function(id){
-        return inspectors.find(function(i){return i.id===id&&!i.unavailable;});
-      }).filter(Boolean);
-      if(!candidates.length) return;
-      var best=candidates.slice().sort(function(a,b){return currentMins(a)-currentMins(b);})[0];
-      job.assignedTo=best.id; job.distFromHome=hav(best,job);
-      assigned[best.id].push(job);
-    });
-
-    // ── Step 2: Assign remaining jobs ────────────────
-    // Sort unassigned jobs heaviest-first so the most constrained
-    // jobs are placed before lighter ones (reduces cert conflicts)
-    var remaining=wj.filter(function(j){return !j.assignedTo;});
-    remaining.sort(function(a,b){
-      return jobSvcMins(b,null)-jobSvcMins(a,null);
-    });
-
-    remaining.forEach(function(job){
       var excIds=job.excludedIds||[];
-
-      // Build eligible pool: available, not excluded
       var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
       if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
       if(!pool.length) pool=inspectors.slice();
 
-      // ── Gas+Sewer split logic ─────────────────────
-      // Consider splitting gas+sewer jobs if it improves balance
-      if(job.gas && job.sewer){
-        var dualPool=pool.filter(function(i){return i.gas&&i.sewer;});
+      initServiceAssignments(job);
+      var reqIds=job.requestedIds||[];
+
+      // Assign Gas
+      if(job.gas){
         var gasPool=pool.filter(function(i){return i.gas;});
+        if(!gasPool.length) gasPool=pool;
+        var priorityPool=gasPool;
+        if(reqIds.length) priorityPool=gasPool.filter(function(i){return reqIds.indexOf(i.id)>=0;});
+        if(!priorityPool.length) priorityPool=gasPool;
+        var bestGas=priorityPool.slice().sort(function(a,b){
+          return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
+        })[0];
+        if(bestGas) job.serviceAssignments.gas=bestGas.id;
+      }
+
+      // Assign Sewer (prefer same as Gas if possible)
+      if(job.sewer){
         var sewPool=pool.filter(function(i){return i.sewer;});
-
-        var shouldSplit=false;
-        var bestGas=null, bestSew=null, bestDual=null;
-
-        // Find best single (dual-certified) assignment
-        if(dualPool.length){
-          bestDual=dualPool.slice().sort(function(a,b){return projectedMins(a,job,false)-projectedMins(b,job,false);})[0];
-        }
-
-        // Find best split assignment
-        if(gasPool.length && sewPool.length){
-          bestGas=gasPool.slice().sort(function(a,b){return projectedMins(a,job,false)-projectedMins(b,job,false);})[0];
-          bestSew=sewPool.filter(function(i){return i.id!==bestGas.id;}).sort(function(a,b){return projectedMins(a,job,true)-projectedMins(b,job,true);})[0];
-
-          if(!bestSew && gasPool.length>1){
-            bestSew=sewPool.sort(function(a,b){return projectedMins(a,job,true)-projectedMins(b,job,true);})[0];
-          }
-        }
-
-        // Decide: split vs single
-        var splitReason=null;
-        if(bestGas && bestSew){
-          if(!bestDual){
-            // No dual available — must split
-            shouldSplit=true;
-            splitReason='No dual-certified inspector available';
-          }else{
-            // Both options available — check if splitting gives better balance
-            // Check if ANY inspector with requests already has work in this window
-            var anyoneHasRequest=Object.keys(assigned).some(function(inspId){
-              return assigned[inspId].some(function(j){return j.requestedIds&&j.requestedIds.length;});
-            });
-            var sewLoad=currentMins(bestSew);
-            var dualLoad=currentMins(bestDual);
-
-            // If someone with a requested job is already working AND sewer inspector is much lighter,
-            // prefer splitting to balance instead of overloading another dual inspector
-            if(anyoneHasRequest && sewLoad < dualLoad * 0.5){
-              shouldSplit=true;
-              splitReason='Balances workload (requested job + light sewer inspector)';
-            }else if(sewLoad < dualLoad * 0.3){
-              // Even without requests, if sewer inspector is very light, split aggressively
-              shouldSplit=true;
-              splitReason='Sewer specialist significantly lighter than dual-certified';
-            }
-          }
-        }else if(!bestDual && bestGas && bestSew){
-          shouldSplit=true;
-          splitReason='Only single-service inspectors available';
-        }
-
-        if(shouldSplit && bestGas && bestSew){
-          job.assignedTo=bestGas.id; job.distFromHome=hav(bestGas,job);
-          job.splitService='sewer'; job.splitAssignedTo=bestSew.id; job.splitDist=hav(bestSew,job);
-          job.splitReason=splitReason;
-          assigned[bestGas.id].push(job); splits[bestSew.id].push(job);
-          return;
+        if(!sewPool.length) sewPool=pool;
+        // Prefer to assign sewer to same inspector as gas
+        var prefersame=job.serviceAssignments.gas && sewPool.some(function(i){return i.id===job.serviceAssignments.gas;});
+        if(prefersame){
+          job.serviceAssignments.sewer=job.serviceAssignments.gas;
+        }else{
+          var bestSew=sewPool.slice().sort(function(a,b){
+            return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
+          })[0];
+          if(bestSew) job.serviceAssignments.sewer=bestSew.id;
         }
       }
 
-      // ── Standard cert-filtered assignment ────────
-      // Pick the inspector whose PROJECTED total (current + this job) is lowest
-      var certPool=pool.filter(function(i){return certOk(i,job);});
-      var finalPool=certPool.length ? certPool : pool;
-      if(!certPool.length) job.certConflict=true;
-
-      var best=finalPool.slice().sort(function(a,b){
-        return projectedMins(a,job,false)-projectedMins(b,job,false);
-      })[0];
-
-      if(best){
-        job.assignedTo=best.id; job.distFromHome=hav(best,job);
-        assigned[best.id].push(job);
+      // Assign Radon + Mold together (always bonded)
+      if(job.radon || job.mold){
+        var rmPool=pool.filter(function(i){
+          return (job.radon?i.radon:true) && (job.mold?i.mold:true);
+        });
+        if(!rmPool.length) rmPool=pool;
+        var bestRM=rmPool.slice().sort(function(a,b){
+          return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
+        })[0];
+        if(bestRM){
+          if(job.radon) job.serviceAssignments.radon=bestRM.id;
+          if(job.mold) job.serviceAssignments.mold=bestRM.id;
+        }
       }
     });
   });
 
   save(); renderAll(); switchTab('results'); buildExport();
-  var c=jobs.filter(function(j){return j.certConflict;}).length;
-  var sp=jobs.filter(function(j){return j.splitAssignedTo;}).length;
-  setStatus('Assigned '+jobs.filter(function(j){return j.assignedTo;}).length+' job(s)'+(sp?' · '+sp+' split':'')+(c?' · '+c+' conflict(s)':'')+'.');
+
+  // Count assigned services
+  var assignedCount=0;
+  jobs.forEach(function(j){
+    initServiceAssignments(j);
+    SVC.forEach(function(s){if(j[s]&&j.serviceAssignments[s]) assignedCount++;});
+  });
+
+  var activeInspCount=0;
+  inspectors.forEach(function(i){if(touchCount(i)>0) activeInspCount++;});
+
+  setStatus('Assigned '+assignedCount+' service(s) across '+activeInspCount+' inspector(s).');
 
   // Refine drive times with actual road distances (async) - with rate limiting to prevent API abuse
   setTimeout(refineDriveTimesRateLimited, 500);
 }
 
 // ── Render helpers ────────────────────────────────────
-function touchCount(i){ return jobs.filter(function(j){return j.assignedTo===i.id||j.splitAssignedTo===i.id;}).length; }
+// NEW: Count jobs assigned to an inspector across all services
+function touchCount(i){
+  var count=0;
+  jobs.forEach(function(j){
+    initServiceAssignments(j);
+    SVC.forEach(function(s){
+      if(j[s] && j.serviceAssignments[s]===i.id) count++;
+    });
+  });
+  return count;
+}
 
 function updateDrops(){
   var rp=document.getElementById('f-jreq-pills'), ep=document.getElementById('f-jexc-pills');
@@ -1141,8 +1284,17 @@ function renderInspList(){
       return'<div class="edit-box" style="border-left:3px solid '+i.color+'"><div class="edit-title">Editing: '+escapeHtml(i.name)+'</div><input type="text" id="ei-name" value="'+escapeHtml(i.name)+'"><input type="text" id="ei-addr" value="'+escapeHtml(i.addr)+'"><div class="pills">'+cp+'</div><div class="btn-row"><button class="btn dark" onclick="saveEditI('+i.id+')">Save</button><button class="btn" onclick="cancelEditI()">Cancel</button></div></div>';
     }
     var cnt=touchCount(i), pct=Math.round(cnt/maxL*100);
-    var myJobs=jobs.filter(function(j){return j.assignedTo===i.id;}), mySp=jobs.filter(function(j){return j.splitAssignedTo===i.id;});
-    var estMins=inspTotalMins(i,myJobs,mySp);
+    // NEW: Calculate estimated minutes for this inspector based on service assignments
+    var amJobs=[], pmJobs=[];
+    jobs.forEach(function(j){
+      initServiceAssignments(j);
+      var hasService=SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===i.id;});
+      if(hasService) (j.window==='AM'?amJobs:pmJobs).push(j);
+    });
+    var estMins=(amJobs.length||pmJobs.length)?Math.max(
+      calcInspectorWorkload(i.id,'AM'),
+      calcInspectorWorkload(i.id,'PM')
+    ):0;
     var certs=SVC.filter(function(s){return i[s];}).map(function(s){return'<span class="tag t-'+s+'">'+s.charAt(0).toUpperCase()+s.slice(1)+'</span>';}).join('');
     return'<div class="chip'+(i.unavailable?' dimmed':'')+'" style="border-left-color:'+i.color+'"><div class="chip-top"><span class="dot" style="background:'+i.color+'"></span><span class="chip-name">'+escapeHtml(i.name)+'</span>'+(i.unavailable?'<span class="badge badge-unavail">Away</span>':(cnt>0?'<span class="badge badge-count">'+cnt+'</span>':''))+'<button class="bicon'+(i.unavailable?' orange':'')+'" onclick="toggleUnavail('+i.id+')" title="Toggle">⊘</button><button class="bicon" onclick="startEditI('+i.id+')">✎</button><button class="bicon red" onclick="removeInsp('+i.id+')">×</button></div><div class="chip-sub">'+escapeHtml(i.display)+'</div>'+(certs?'<div style="display:flex;gap:4px;flex-wrap:wrap;padding-left:16px;margin-bottom:3px;">'+certs+'</div>':'')+(cnt>0?'<div class="lbar-bg"><div class="lbar-fill" style="width:'+pct+'%;background:'+i.color+'"></div></div><div class="lbar-lbl">'+cnt+' job'+(cnt>1?'s':'')+' · ~'+fmtMins(estMins)+'</div>':'')+'</div>';
   }).join('');
@@ -1176,15 +1328,24 @@ function renderJobList(){
 
 function renderResults(){
   var ca=document.getElementById('err-area'), sa=document.getElementById('sum-area'), el=document.getElementById('res-list');
-  var assigned=jobs.filter(function(j){return j.assignedTo;});
-  if(!assigned.length){ca.innerHTML='';sa.innerHTML='';el.innerHTML='<div class="empty">Run auto-assign to see results</div>';return;}
-  var cf=jobs.filter(function(j){return j.certConflict;});
-  ca.innerHTML=cf.length?'<div class="err-banner">⚠ '+cf.length+' job(s) without required certification.</div>':'';
 
-  // Summary cards — show time range instead of just job count
+  // NEW: Count any assigned services
+  var hasAssignments=false;
+  jobs.forEach(function(j){
+    initServiceAssignments(j);
+    SVC.forEach(function(s){if(j[s]&&j.serviceAssignments[s]) hasAssignments=true;});
+  });
+
+  if(!hasAssignments){ca.innerHTML='';sa.innerHTML='';el.innerHTML='<div class="empty">Run auto-assign to see results</div>';return;}
+
+  ca.innerHTML=''; // No cert conflicts with new model
+
+  // Summary cards
   var activeInsp=inspectors.filter(function(i){return touchCount(i)>0;});
   var inspMins=activeInsp.map(function(i){
-    return inspTotalMins(i,jobs.filter(function(j){return j.assignedTo===i.id;}),jobs.filter(function(j){return j.splitAssignedTo===i.id;}));
+    var amMins=calcInspectorWorkload(i.id,'AM');
+    var pmMins=calcInspectorWorkload(i.id,'PM');
+    return Math.max(amMins,pmMins);
   });
   var mnM=inspMins.length?Math.min.apply(null,inspMins):0, mxM=inspMins.length?Math.max.apply(null,inspMins):0;
   var gap=mxM-mnM;
@@ -1192,7 +1353,7 @@ function renderResults(){
   var balLabel=gap<=30?'Even':gap<=60?'Close':'Uneven';
 
   sa.innerHTML='<div class="sgrid">'
-    +'<div class="scard"><div class="sval">'+assigned.length+'</div><div class="slbl">Total jobs</div></div>'
+    +'<div class="scard"><div class="sval">'+jobs.length+'</div><div class="slbl">Total jobs</div></div>'
     +'<div class="scard"><div class="sval">'+activeInsp.length+'</div><div class="slbl">Active inspectors</div></div>'
     +'<div class="scard"><div class="sval">'+fmtMins(mnM)+'–'+fmtMins(mxM)+'</div><div class="slbl">Time range</div></div>'
     +'<div class="scard"><div class="sval" style="color:'+balColor+'">'+balLabel+'</div><div class="slbl">Workload balance</div></div>'
@@ -1201,97 +1362,122 @@ function renderResults(){
   var offBanner=office?'<div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:6px 10px;font-size:11px;color:#854F0B;margin-bottom:8px;">Midday waypoint: '+escapeHtml(office.display)+'</div>':'';
   var html=offBanner;
 
+  // NEW: Display routes for each inspector
   ['AM','PM'].forEach(function(win){
-    var wj=jobs.filter(function(j){return j.window===win&&j.assignedTo;});
+    var wj=jobs.filter(function(j){
+      if(j.window!==win) return false;
+      initServiceAssignments(j);
+      return SVC.some(function(s){return j[s]&&j.serviceAssignments[s];});
+    });
     if(!wj.length) return;
+
     html+='<div class="whead"><span class="tag t-'+win.toLowerCase()+'">'+win+' · '+(win==='AM'?'9–12':'2–5')+'</span></div>';
+
     inspectors.forEach(function(insp){
-      var myJ=wj.filter(function(j){return j.assignedTo===insp.id;});
-      var mySp=wj.filter(function(j){return j.splitAssignedTo===insp.id;});
-      if(!myJ.length&&!mySp.length) return;
-      var certs=SVC.filter(function(s){return insp[s];}).map(function(s){return'<span class="tag t-'+s+'">'+s.charAt(0).toUpperCase()+s.slice(1)+'</span>';}).join('');
-      var total=myJ.length+mySp.length;
-      var estMins=inspTotalMins(insp,myJ,mySp);
+      var route=calculateOptimalRoute(insp.id, win);
+      if(!route.length) return;
+
+      var amMins=calcInspectorWorkload(insp.id,'AM');
+      var pmMins=calcInspectorWorkload(insp.id,'PM');
+      var estMins=win==='AM'?amMins:pmMins;
       var estLabel=estMins?'<span class="insp-total">~'+fmtMins(estMins)+'</span>':'';
-      html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'
+
+      html+='<div style="margin-bottom:16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">'
         +'<div style="width:8px;height:8px;border-radius:50%;background:'+insp.color+';flex-shrink:0"></div>'
         +'<span style="font-size:13px;font-weight:600;color:#111">'+escapeHtml(insp.name)+'</span>'
-        +'<span style="font-size:11px;color:#888">'+total+' job'+(total>1?'s':'')+'</span>'+certs+estLabel
-        +'</div><div style="padding-left:14px">';
-      var jobNum=0;
-      myJ.forEach(function(j){
-        jobNum++;
-        var st=svcTags(j,j.splitService);
-        var excI=(j.excludedIds||[]).map(function(id){return inspectors.find(function(i){return i.id===id;});}).filter(Boolean);
-        var ex=((j.requestedIds&&j.requestedIds.length)?'<span class="tag t-req">Requested</span>':'')
-          +excI.map(function(i){return'<span class="tag t-exc">Not: '+escapeHtml(i.name)+'</span>';}).join('')
-          +(j.certConflict?'<span class="tag t-bad">Cert conflict</span>':'');
-        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.assignedTo===i.id?' selected':'')+'>'+escapeHtml(i.name)+(i.unavailable?' ⊘':'')+'</option>';}).join('');
-        var svcM=jobSvcMins(j,j.splitService);
-        var timerHtml=svcM?'<span class="est-badge svc">'+fmtMins(svcM)+'</span>':'';
-        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start">'
-          +'<span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span>'
-          +'<div style="flex:1;min-width:0">'
-            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(j.display)+'</div>'
-            +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+timerHtml+'</div>'
-            +(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')
-            +'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div>'
-          +'</div></div></div>';
+        +'<span style="font-size:11px;color:#888">'+route.length+' job'+(route.length>1?'s':'')+' · '+estLabel
+        +'</span></div>';
+
+      // Show route visualization
+      html+='<div style="font-size:11px;color:#555;margin:8px 0;padding:10px;background:#f9f9f9;border-radius:4px;border-left:2px solid '+insp.color+';line-height:1.8;">';
+      html+='📍 '+escapeHtml(insp.name)+' (home)<br>';
+
+      var current=insp;
+      route.forEach(function(job){
+        var d=hav(current,job);
+        var mins=driveMins(d);
+        var svcs=SVC.filter(function(s){
+          return job[s]&&job.serviceAssignments[s]===insp.id;
+        }).map(function(s){return s.toUpperCase();}).join('+');
+        html+='↓ '+mins+'m<br>📍 '+escapeHtml(job.display)+(svcs?' ['+svcs+']':'')+'<br>';
+        current=job;
       });
-      mySp.forEach(function(j){
-        jobNum++;
-        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.splitAssignedTo===i.id?' selected':'')+'>'+escapeHtml(i.name)+(i.unavailable?' ⊘':'')+'</option>';}).join('');
-        var reasonNote=j.splitReason?'<div style="font-size:10px;color:#d97706;margin-top:2px;font-style:italic;padding:4px;background:#fffbf0;border-radius:4px">💡 Split because: '+escapeHtml(j.splitReason)+'</div>':'';
-        html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start">'
-          +'<span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span>'
-          +'<div style="flex:1;min-width:0">'
-            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(j.display)+' <span style="color:#888;font-weight:400">(sewer only)</span></div>'
-            +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="est-badge svc">'+fmtMins(SVC_MINS.sewer)+'</span></div>'
-            +reasonNote
-            +(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')
-            +'<div class="or-row"><select id="sr-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverrideSplit('+j.id+')">Reassign</button></div>'
-          +'</div></div></div>';
+
+      var endDist=hav(current,insp);
+      var endMins=driveMins(endDist);
+      html+='↓ '+endMins+'m<br>📍 '+escapeHtml(insp.name)+' (home)';
+      html+='</div>';
+
+      // Service reassignment controls
+      html+='<div style="padding:8px;background:#fafafa;border-radius:4px;margin-top:8px">';
+      route.forEach(function(j){
+        SVC.forEach(function(s){
+          if(!j[s] || j.serviceAssignments[s]!==insp.id) return;
+          var oo='<option value="">Unassign</option>'+inspectors.map(function(i){
+            var canAssign=i[s];
+            return'<option value="'+i.id+'"'+(canAssign?'':' disabled')+'>'+escapeHtml(i.name)+(i.unavailable?' ⊘':'')+(canAssign?'':'')+'</option>';
+          }).join('');
+          html+='<div style="font-size:11px;margin-bottom:6px;padding:6px;background:white;border-radius:3px;border-left:2px solid '+SVC_CLS_COLOR[s]+';display:flex;gap:4px;align-items:center">'
+            +'<span style="font-weight:600;flex:1">'+escapeHtml(j.display)+' · '+s.toUpperCase()+'</span>'
+            +'<select id="ors-'+j.id+'-'+s+'" style="font-size:10px;padding:2px 4px;">'+oo+'</select>'
+            +'<button class="btn" style="padding:2px 6px;font-size:10px;width:auto;" onclick="reassignService('+j.id+',\''+s+'\')">Move</button>'
+            +'</div>';
+        });
       });
-      html+='</div></div>';
+      html+='</div>';
+      html+='</div>';
     });
   });
+
   el.innerHTML=html||'<div class="empty">No assignments yet</div>';
 }
 
 function buildExport(){
-  var assigned=jobs.filter(function(j){return j.assignedTo;});
-  if(!assigned.length){document.getElementById('exp-box').textContent='No assignments yet.';return;}
+  var hasAssignments=false;
+  jobs.forEach(function(j){
+    initServiceAssignments(j);
+    SVC.forEach(function(s){if(j[s]&&j.serviceAssignments[s]) hasAssignments=true;});
+  });
+  if(!hasAssignments){document.getElementById('exp-box').textContent='No assignments yet.';return;}
+
   var date=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
   var line=Array(37).join('─');
   var out='PILLAR TO POST — SCHEDULE\n'+date+'\n'+line+'\n';
+
   ['AM','PM'].forEach(function(win,wi){
-    var wj=jobs.filter(function(j){return j.window===win&&j.assignedTo;});
+    var wj=jobs.filter(function(j){
+      if(j.window!==win) return false;
+      initServiceAssignments(j);
+      return SVC.some(function(s){return j[s]&&j.serviceAssignments[s];});
+    });
     if(!wj.length) return;
-    if(wi===1&&office&&jobs.some(function(j){return j.window==='AM'&&j.assignedTo;})){
+
+    if(wi===1&&office&&jobs.some(function(j){
+      if(j.window!=='AM') return false;
+      initServiceAssignments(j);
+      return SVC.some(function(s){return j[s]&&j.serviceAssignments[s];});
+    })){
       out+='\n── Midday waypoint: '+office.display+' ──\n';
     }
+
     out+='\n'+win+' WINDOW  ('+(win==='AM'?'9:00 AM – 12:00 PM':'2:00 PM – 5:00 PM')+')\n'+line+'\n';
+
     inspectors.forEach(function(insp){
-      var lines=[];
-      wj.filter(function(j){return j.assignedTo===insp.id;}).forEach(function(j){
-        var svcs=SVC.filter(function(s){return j[s]&&s!==j.splitService;}).map(function(s){return s.toUpperCase();}).join('+');
-        var ln='  '+j.display+(svcs?' ['+svcs+']':'')+(j.certConflict?' ⚠ CERT CONFLICT':'');
-        lines.push(ln);
+      var route=calculateOptimalRoute(insp.id,win);
+      if(!route.length) return;
+
+      var estMins=calcInspectorWorkload(insp.id,win);
+      out+='\n'+escapeHtml(insp.name)+(insp.unavailable?' [UNAVAILABLE]':'')+(estMins?' (~'+fmtMins(estMins)+')'  :'')+'\n';
+
+      route.forEach(function(j, idx){
+        var svcs=SVC.filter(function(s){return j[s]&&j.serviceAssignments[s]===insp.id;}).map(function(s){return s.toUpperCase();}).join('+');
+        out+='  '+(idx+1)+'. '+j.display+(svcs?' ['+svcs+']':'')+'\n';
       });
-      wj.filter(function(j){return j.splitAssignedTo===insp.id;}).forEach(function(j){
-        var ln='  '+j.display+' [SEWER]';
-        lines.push(ln);
-      });
-      if(!lines.length) return;
-      var myJ=wj.filter(function(j){return j.assignedTo===insp.id;});
-      var mySp=wj.filter(function(j){return j.splitAssignedTo===insp.id;});
-      var est=inspTotalMins(insp,myJ,mySp);
-      out+='\n'+insp.name+(insp.unavailable?' [UNAVAILABLE]':'')+(est?' (~'+fmtMins(est)+')'  :'')+'\n';
-      lines.forEach(function(l,i){out+='  '+(i+1)+'. '+l.trimLeft()+'\n';});
     });
   });
+
   var avail=inspectors.filter(function(i){return !i.unavailable;}).length;
-  out+='\n'+line+'\nTotal: '+assigned.length+' inspection'+(assigned.length!==1?'s':'')+' · '+avail+' inspector'+(avail!==1?'s':'');
+  out+='\n'+line+'\nTotal: '+jobs.length+' job'+(jobs.length!==1?'s':'')+' · '+avail+' inspector'+(avail!==1?'s':'');
   document.getElementById('exp-box').textContent=out;
 }
 function copyExport(){ var t=document.getElementById('exp-box').textContent; navigator.clipboard.writeText(t).then(function(){setStatus('Copied!');}).catch(function(){setStatus('Copy failed — select manually.');}); }
@@ -1326,14 +1512,42 @@ function renderMap(){
     im.addListener('click',function(){new google.maps.InfoWindow({content:'<b>'+insp.name+'</b>'+(insp.unavailable?'<br><span style="color:#b91c1c;font-size:11px">Unavailable</span>':'')+'<br>Home base'}).open(map,im);});
     layers.push(im); bounds.extend({lat:insp.lat,lng:insp.lng}); hasBounds=true;
   });
+  // NEW: Show jobs with service assignment markers
   jobs.forEach(function(job,idx){
-    var insp=inspectors.find(function(i){return i.id===job.assignedTo;}), color=insp?insp.color:'#888';
-    var jm=new google.maps.Marker({position:{lat:job.lat,lng:job.lng},map:map,title:'Job '+(idx+1),icon:createJobIcon(color,idx+1,job.window)});
-    jm.addListener('click',function(){var si=job.splitAssignedTo?inspectors.find(function(i){return i.id===job.splitAssignedTo;}):null;new google.maps.InfoWindow({content:'<b>Job '+(idx+1)+' · '+job.window+'</b><br>'+job.display+(job.notes?'<br><i style="font-size:11px">'+job.notes+'</i>':'')+(insp?'<br>→ '+insp.name:'')+(si?'<br>+ '+si.name+' (sewer)':'')}).open(map,jm);});
+    initServiceAssignments(job);
+    var jobInspectors=getJobInspectors(job);
+    var primaryColor=jobInspectors.length>0?inspectors.find(function(i){return i.id===jobInspectors[0];}).color:'#888';
+
+    var jm=new google.maps.Marker({position:{lat:job.lat,lng:job.lng},map:map,title:'Job '+(idx+1),icon:createJobIcon(primaryColor,idx+1,job.window)});
+    jm.addListener('click',function(){
+      var svcText=SVC.map(function(s){
+        if(!job[s]) return '';
+        var inspId=job.serviceAssignments[s];
+        if(!inspId) return '';
+        var i=inspectors.find(function(x){return x.id===inspId;});
+        return s.toUpperCase()+' → '+i.name;
+      }).filter(Boolean).join(' | ');
+      new google.maps.InfoWindow({content:'<b>Job '+(idx+1)+' · '+job.window+'</b><br>'+job.display+(job.notes?'<br><i style="font-size:11px">'+job.notes+'</i>':'')+'<br>'+svcText}).open(map,jm);
+    });
     layers.push(jm); bounds.extend({lat:job.lat,lng:job.lng}); hasBounds=true;
-    if(insp){var pl=new google.maps.Polyline({path:[{lat:insp.lat,lng:insp.lng},{lat:job.lat,lng:job.lng}],map:map,strokeColor:color,strokeWeight:2,strokeOpacity:0.4,geodesic:true});layers.push(pl);}
-    var si=job.splitAssignedTo?inspectors.find(function(i){return i.id===job.splitAssignedTo;}):null;
-    if(si){var pl2=new google.maps.Polyline({path:[{lat:si.lat,lng:si.lng},{lat:job.lat,lng:job.lng}],map:map,strokeColor:si.color,strokeWeight:1.5,strokeOpacity:0.3,geodesic:true});layers.push(pl2);}
+
+    // Draw lines for each service assignment
+    SVC.forEach(function(s){
+      if(!job[s]) return;
+      var inspId=job.serviceAssignments[s];
+      if(!inspId) return;
+      var insp=inspectors.find(function(i){return i.id===inspId;});
+      if(!insp) return;
+      var pl=new google.maps.Polyline({
+        path:[{lat:insp.lat,lng:insp.lng},{lat:job.lat,lng:job.lng}],
+        map:map,
+        strokeColor:SVC_CLS_COLOR[s],
+        strokeWeight:2,
+        strokeOpacity:0.5,
+        geodesic:true
+      });
+      layers.push(pl);
+    });
   });
   if(hasBounds && jobs.length+inspectors.length>0){try{map.fitBounds(bounds);}catch(e){}}
 }
