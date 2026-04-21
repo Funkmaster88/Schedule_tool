@@ -116,6 +116,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 </style>
 </head>
 <body>
+<!-- HTTPS Warning Banner -->
+<div id="https-warning-banner" style="display:none;background:#fee2e2;border-bottom:2px solid #fca5a5;padding:10px 16px;text-align:center;font-size:12px;color:#b91c1c;font-weight:600">
+  ⚠ Warning: This page is loaded over HTTP (not HTTPS). Your API key may not be secure. Please use HTTPS for this application.
+</div>
+
 <!-- API Key Setup Modal -->
 <div id="api-key-modal" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
   <div style="background:white;border-radius:12px;padding:40px;max-width:500px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.3)">
@@ -267,7 +272,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v16 — Secure API key input (current)</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v17 — Enhanced security & API rate limiting (current)</div>
+          <div style="color:#888">Added HTTPS warning banner to alert users if served over insecure HTTP connection. Implemented HTML escaping (XSS prevention) for all user input (addresses, names, notes) before display. Added rate limiting on Distance Matrix API calls — minimum 60-second cooldown between drive time refinements to prevent accidental API overuse. Updated USER_GUIDE with comprehensive security section and Google Maps API cost breakdown. All security features work transparently without user action.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v16 — Secure API key input</div>
           <div style="color:#888">Removed hardcoded Google Maps API key from code for security. App now prompts users to enter their own API key on first load, stored securely in browser local storage. No API keys exposed in GitHub repository. Each user brings their own key, eliminating security risk. Clear setup modal with instructions on obtaining API key from Google Cloud Console.</div>
         </div>
         <div style="margin-bottom:12px">
@@ -350,6 +359,35 @@ let map, inspectors=[], jobs=[], layers=[];
 let curWin='AM', editIId=null, editJId=null;
 var office=null;
 var googleApiKey=null;
+var lastRefineDriveTimesCall=0;
+var MIN_REFINE_INTERVAL=60000; // Minimum 60 seconds between refine calls to prevent API abuse
+
+// ── SECURITY FUNCTIONS ────────────────────────────────
+// Check if page is served over HTTPS and warn if not
+function checkHttpsAndWarn(){
+  if(window.location.protocol!=='https:' && window.location.hostname!=='localhost'){
+    document.getElementById('https-warning-banner').style.display='block';
+  }
+}
+
+// HTML escape function to prevent XSS attacks
+function escapeHtml(text){
+  if(!text) return '';
+  var div=document.createElement('div');
+  div.textContent=text;
+  return div.innerHTML;
+}
+
+// Rate limiting wrapper for refineDriveTimes to prevent API abuse
+function refineDriveTimesRateLimited(){
+  var now=Date.now();
+  if(now-lastRefineDriveTimesCall<MIN_REFINE_INTERVAL){
+    setStatus('Please wait before recalculating drive times (prevents API overuse).');
+    return;
+  }
+  lastRefineDriveTimesCall=now;
+  refineDriveTimes();
+}
 
 // Load API key from localStorage or show setup modal
 function initApiKey(){
@@ -414,6 +452,7 @@ function save(){
 
 // ── Boot ──────────────────────────────────────────────
 window.addEventListener('load', function(){
+  checkHttpsAndWarn();
   initApiKey();
 
   // If API key already loaded, map will be initialized by initializeApp()
@@ -474,7 +513,7 @@ function clearOffice(){ office=null; save(); renderOffice(); renderMap(); docume
 function renderOffice(){
   var el=document.getElementById('office-display');
   if(!office){el.innerHTML='<span style="font-size:12px;color:#aaa">No office set</span>';return;}
-  el.innerHTML='<div class="office-chip"><span style="width:10px;height:10px;border-radius:50%;background:#BA7517;flex-shrink:0;display:inline-block"></span><span style="flex:1;margin-left:6px">'+office.display+'</span><button class="bicon red" onclick="clearOffice()" title="Clear">×</button></div>';
+  el.innerHTML='<div class="office-chip"><span style="width:10px;height:10px;border-radius:50%;background:#BA7517;flex-shrink:0;display:inline-block"></span><span style="flex:1;margin-left:6px">'+escapeHtml(office.display)+'</span><button class="bicon red" onclick="clearOffice()" title="Clear">×</button></div>';
 }
 
 // ── Geocode ───────────────────────────────────────────
@@ -1074,8 +1113,8 @@ function runAssignment(){
   var sp=jobs.filter(function(j){return j.splitAssignedTo;}).length;
   setStatus('Assigned '+jobs.filter(function(j){return j.assignedTo;}).length+' job(s)'+(sp?' · '+sp+' split':'')+(c?' · '+c+' conflict(s)':'')+'.');
 
-  // Refine drive times with actual road distances (async)
-  setTimeout(refineDriveTimes, 500);
+  // Refine drive times with actual road distances (async) - with rate limiting to prevent API abuse
+  setTimeout(refineDriveTimesRateLimited, 500);
 }
 
 // ── Render helpers ────────────────────────────────────
@@ -1085,10 +1124,10 @@ function updateDrops(){
   var rp=document.getElementById('f-jreq-pills'), ep=document.getElementById('f-jexc-pills');
   if(!rp||!ep) return;
   rp.innerHTML=inspectors.map(function(i){
-    return'<span class="mpill'+(curReqIds.indexOf(i.id)>=0?' req-on':'')+(i.unavailable?' mpill-dis':'')+'" id="rp-'+i.id+'" onclick="toggleReqPill('+i.id+')" style="'+(i.unavailable?'opacity:.45;cursor:default':'')+'">'+i.name+'</span>';
+    return'<span class="mpill'+(curReqIds.indexOf(i.id)>=0?' req-on':'')+(i.unavailable?' mpill-dis':'')+'" id="rp-'+i.id+'" onclick="toggleReqPill('+i.id+')" style="'+(i.unavailable?'opacity:.45;cursor:default':'')+'">'+escapeHtml(i.name)+'</span>';
   }).join('');
   ep.innerHTML=inspectors.map(function(i){
-    return'<span class="mpill'+(curExcIds.indexOf(i.id)>=0?' exc-on':'')+'" id="ep-'+i.id+'" onclick="toggleExcPill('+i.id+')">'+i.name+'</span>';
+    return'<span class="mpill'+(curExcIds.indexOf(i.id)>=0?' exc-on':'')+'" id="ep-'+i.id+'" onclick="toggleExcPill('+i.id+')">'+escapeHtml(i.name)+'</span>';
   }).join('');
 }
 
@@ -1099,13 +1138,13 @@ function renderInspList(){
   el.innerHTML=inspectors.map(function(i){
     if(editIId===i.id){
       var cp=SVC.map(function(s){return'<label class="pill'+(i[s]?' '+SVC_CLS[s]:'')+'" id="epi-'+s+'"><input type="checkbox" id="ei-'+s+'" '+(i[s]?'checked':'')+' onchange="document.getElementById(\'epi-'+s+'\').className=\'pill\'+(this.checked?\' '+SVC_CLS[s]+'\':\'\')">'+ s.charAt(0).toUpperCase()+s.slice(1)+'</label>';}).join('');
-      return'<div class="edit-box" style="border-left:3px solid '+i.color+'"><div class="edit-title">Editing: '+i.name+'</div><input type="text" id="ei-name" value="'+i.name+'"><input type="text" id="ei-addr" value="'+i.addr+'"><div class="pills">'+cp+'</div><div class="btn-row"><button class="btn dark" onclick="saveEditI('+i.id+')">Save</button><button class="btn" onclick="cancelEditI()">Cancel</button></div></div>';
+      return'<div class="edit-box" style="border-left:3px solid '+i.color+'"><div class="edit-title">Editing: '+escapeHtml(i.name)+'</div><input type="text" id="ei-name" value="'+escapeHtml(i.name)+'"><input type="text" id="ei-addr" value="'+escapeHtml(i.addr)+'"><div class="pills">'+cp+'</div><div class="btn-row"><button class="btn dark" onclick="saveEditI('+i.id+')">Save</button><button class="btn" onclick="cancelEditI()">Cancel</button></div></div>';
     }
     var cnt=touchCount(i), pct=Math.round(cnt/maxL*100);
     var myJobs=jobs.filter(function(j){return j.assignedTo===i.id;}), mySp=jobs.filter(function(j){return j.splitAssignedTo===i.id;});
     var estMins=inspTotalMins(i,myJobs,mySp);
     var certs=SVC.filter(function(s){return i[s];}).map(function(s){return'<span class="tag t-'+s+'">'+s.charAt(0).toUpperCase()+s.slice(1)+'</span>';}).join('');
-    return'<div class="chip'+(i.unavailable?' dimmed':'')+'" style="border-left-color:'+i.color+'"><div class="chip-top"><span class="dot" style="background:'+i.color+'"></span><span class="chip-name">'+i.name+'</span>'+(i.unavailable?'<span class="badge badge-unavail">Away</span>':(cnt>0?'<span class="badge badge-count">'+cnt+'</span>':''))+'<button class="bicon'+(i.unavailable?' orange':'')+'" onclick="toggleUnavail('+i.id+')" title="Toggle">⊘</button><button class="bicon" onclick="startEditI('+i.id+')">✎</button><button class="bicon red" onclick="removeInsp('+i.id+')">×</button></div><div class="chip-sub">'+i.display+'</div>'+(certs?'<div style="display:flex;gap:4px;flex-wrap:wrap;padding-left:16px;margin-bottom:3px;">'+certs+'</div>':'')+(cnt>0?'<div class="lbar-bg"><div class="lbar-fill" style="width:'+pct+'%;background:'+i.color+'"></div></div><div class="lbar-lbl">'+cnt+' job'+(cnt>1?'s':'')+' · ~'+fmtMins(estMins)+'</div>':'')+'</div>';
+    return'<div class="chip'+(i.unavailable?' dimmed':'')+'" style="border-left-color:'+i.color+'"><div class="chip-top"><span class="dot" style="background:'+i.color+'"></span><span class="chip-name">'+escapeHtml(i.name)+'</span>'+(i.unavailable?'<span class="badge badge-unavail">Away</span>':(cnt>0?'<span class="badge badge-count">'+cnt+'</span>':''))+'<button class="bicon'+(i.unavailable?' orange':'')+'" onclick="toggleUnavail('+i.id+')" title="Toggle">⊘</button><button class="bicon" onclick="startEditI('+i.id+')">✎</button><button class="bicon red" onclick="removeInsp('+i.id+')">×</button></div><div class="chip-sub">'+escapeHtml(i.display)+'</div>'+(certs?'<div style="display:flex;gap:4px;flex-wrap:wrap;padding-left:16px;margin-bottom:3px;">'+certs+'</div>':'')+(cnt>0?'<div class="lbar-bg"><div class="lbar-fill" style="width:'+pct+'%;background:'+i.color+'"></div></div><div class="lbar-lbl">'+cnt+' job'+(cnt>1?'s':'')+' · ~'+fmtMins(estMins)+'</div>':'')+'</div>';
   }).join('');
 }
 
@@ -1119,19 +1158,19 @@ function renderJobList(){
       var w=j._ew||j.window;
       editReqIds[j.id]=j.requestedIds.slice(); editExcIds[j.id]=j.excludedIds.slice();
       var cp=SVC.map(function(s){return'<label class="pill'+(j[s]?' '+SVC_CLS[s]:'')+'" id="epj-'+s+'-'+j.id+'"><input type="checkbox" id="ej-'+s+'-'+j.id+'" '+(j[s]?'checked':'')+' onchange="document.getElementById(\'epj-'+s+'-'+j.id+'\').className=\'pill\'+(this.checked?\' '+SVC_CLS[s]+'\':\'\')">'+ s.charAt(0).toUpperCase()+s.slice(1)+'</label>';}).join('');
-      var rPills=inspectors.map(function(i){return'<span class="mpill'+(j.requestedIds.indexOf(i.id)>=0?' req-on':'')+'" id="erp-'+j.id+'-'+i.id+'" onclick="toggleEditReqPill('+j.id+','+i.id+')">'+i.name+'</span>';}).join('');
-      var ePills=inspectors.map(function(i){return'<span class="mpill'+(j.excludedIds.indexOf(i.id)>=0?' exc-on':'')+'" id="eep-'+j.id+'-'+i.id+'" onclick="toggleEditExcPill('+j.id+','+i.id+')">'+i.name+'</span>';}).join('');
-      return'<div class="edit-box"><div class="edit-title">Editing job</div><input type="text" id="ej-addr-'+j.id+'" value="'+j.addr+'"><div class="win-toggle"><button class="win-btn '+(w==='AM'?'am':'off')+'" id="ej-am-'+j.id+'" onclick="setEditWin('+j.id+',\'AM\')">AM · 9–12</button><button class="win-btn '+(w==='PM'?'pm':'off')+'" id="ej-pm-'+j.id+'" onclick="setEditWin('+j.id+',\'PM\')">PM · 2–5</button></div><div class="pills">'+cp+'</div><div class="drop-label">Requested inspector(s)</div><div class="multi-pick">'+rPills+'</div><div class="drop-label">Excluded inspector(s)</div><div class="multi-pick">'+ePills+'</div><textarea id="ej-notes-'+j.id+'" placeholder="Notes…">'+(j.notes||'')+'</textarea><div class="btn-row"><button class="btn dark" onclick="saveEditJ('+j.id+')">Save</button><button class="btn" onclick="cancelEditJ()">Cancel</button></div></div>';
+      var rPills=inspectors.map(function(i){return'<span class="mpill'+(j.requestedIds.indexOf(i.id)>=0?' req-on':'')+'" id="erp-'+j.id+'-'+i.id+'" onclick="toggleEditReqPill('+j.id+','+i.id+')">'+escapeHtml(i.name)+'</span>';}).join('');
+      var ePills=inspectors.map(function(i){return'<span class="mpill'+(j.excludedIds.indexOf(i.id)>=0?' exc-on':'')+'" id="eep-'+j.id+'-'+i.id+'" onclick="toggleEditExcPill('+j.id+','+i.id+')">'+escapeHtml(i.name)+'</span>';}).join('');
+      return'<div class="edit-box"><div class="edit-title">Editing job</div><input type="text" id="ej-addr-'+j.id+'" value="'+escapeHtml(j.addr)+'"><div class="win-toggle"><button class="win-btn '+(w==='AM'?'am':'off')+'" id="ej-am-'+j.id+'" onclick="setEditWin('+j.id+',\'AM\')">AM · 9–12</button><button class="win-btn '+(w==='PM'?'pm':'off')+'" id="ej-pm-'+j.id+'" onclick="setEditWin('+j.id+',\'PM\')">PM · 2–5</button></div><div class="pills">'+cp+'</div><div class="drop-label">Requested inspector(s)</div><div class="multi-pick">'+rPills+'</div><div class="drop-label">Excluded inspector(s)</div><div class="multi-pick">'+ePills+'</div><textarea id="ej-notes-'+j.id+'" placeholder="Notes…">'+escapeHtml(j.notes||'')+'</textarea><div class="btn-row"><button class="btn dark" onclick="saveEditJ('+j.id+')">Save</button><button class="btn" onclick="cancelEditJ()">Cancel</button></div></div>';
     }
     var insp=inspectors.find(function(i){return i.id===j.assignedTo;}), color=insp?insp.color:'#ccc';
     var wt='<span class="tag t-'+j.window.toLowerCase()+'">'+j.window+' '+(j.window==='AM'?'9–12':'2–5')+'</span>';
     var st=svcTags(j,null);
-    var rt=j.requestedIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?'<span class="tag t-req">Req: '+i.name+'</span>':'';}).join('');
-    var et=j.excludedIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?'<span class="tag t-exc">Not: '+i.name+'</span>':'';}).join('');
-    var at=insp?'<span style="color:'+insp.color+';font-weight:600">'+insp.name+'</span>':'<span class="tag t-warn">unassigned</span>';
+    var rt=j.requestedIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?'<span class="tag t-req">Req: '+escapeHtml(i.name)+'</span>':'';}).join('');
+    var et=j.excludedIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?'<span class="tag t-exc">Not: '+escapeHtml(i.name)+'</span>':'';}).join('');
+    var at=insp?'<span style="color:'+insp.color+';font-weight:600">'+escapeHtml(insp.name)+'</span>':'<span class="tag t-warn">unassigned</span>';
     var svcM=jobSvcMins(j,null);
     var eb=svcM?'<span class="est-badge svc">'+fmtMins(svcM)+'</span>':'';
-    return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+j.display+'</div><div class="jmeta">'+wt+st+rt+et+at+eb+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')">✎</button><button class="bicon red" onclick="removeJob('+j.id+')">×</button></div>';
+    return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+escapeHtml(j.display)+'</div><div class="jmeta">'+wt+st+rt+et+at+eb+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')">✎</button><button class="bicon red" onclick="removeJob('+j.id+')">×</button></div>';
   }).join('');
 }
 
@@ -1159,7 +1198,7 @@ function renderResults(){
     +'<div class="scard"><div class="sval" style="color:'+balColor+'">'+balLabel+'</div><div class="slbl">Workload balance</div></div>'
     +'</div>';
 
-  var offBanner=office?'<div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:6px 10px;font-size:11px;color:#854F0B;margin-bottom:8px;">Midday waypoint: '+office.display+'</div>':'';
+  var offBanner=office?'<div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:6px 10px;font-size:11px;color:#854F0B;margin-bottom:8px;">Midday waypoint: '+escapeHtml(office.display)+'</div>':'';
   var html=offBanner;
 
   ['AM','PM'].forEach(function(win){
@@ -1176,7 +1215,7 @@ function renderResults(){
       var estLabel=estMins?'<span class="insp-total">~'+fmtMins(estMins)+'</span>':'';
       html+='<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">'
         +'<div style="width:8px;height:8px;border-radius:50%;background:'+insp.color+';flex-shrink:0"></div>'
-        +'<span style="font-size:13px;font-weight:600;color:#111">'+insp.name+'</span>'
+        +'<span style="font-size:13px;font-weight:600;color:#111">'+escapeHtml(insp.name)+'</span>'
         +'<span style="font-size:11px;color:#888">'+total+' job'+(total>1?'s':'')+'</span>'+certs+estLabel
         +'</div><div style="padding-left:14px">';
       var jobNum=0;
@@ -1185,15 +1224,15 @@ function renderResults(){
         var st=svcTags(j,j.splitService);
         var excI=(j.excludedIds||[]).map(function(id){return inspectors.find(function(i){return i.id===id;});}).filter(Boolean);
         var ex=((j.requestedIds&&j.requestedIds.length)?'<span class="tag t-req">Requested</span>':'')
-          +excI.map(function(i){return'<span class="tag t-exc">Not: '+i.name+'</span>';}).join('')
+          +excI.map(function(i){return'<span class="tag t-exc">Not: '+escapeHtml(i.name)+'</span>';}).join('')
           +(j.certConflict?'<span class="tag t-bad">Cert conflict</span>':'');
-        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.assignedTo===i.id?' selected':'')+'>'+i.name+(i.unavailable?' ⊘':'')+'</option>';}).join('');
+        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.assignedTo===i.id?' selected':'')+'>'+escapeHtml(i.name)+(i.unavailable?' ⊘':'')+'</option>';}).join('');
         var svcM=jobSvcMins(j,j.splitService);
         var timerHtml=svcM?'<span class="est-badge svc">'+fmtMins(svcM)+'</span>':'';
         html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start">'
           +'<span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span>'
           +'<div style="flex:1;min-width:0">'
-            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+'</div>'
+            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(j.display)+'</div>'
             +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'+st+ex+timerHtml+'</div>'
             +(j.distFromHome!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.distFromHome.toFixed(1)+' mi from home</div>':'')
             +'<div class="or-row"><select id="or-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverride('+j.id+')">Reassign</button></div>'
@@ -1201,12 +1240,12 @@ function renderResults(){
       });
       mySp.forEach(function(j){
         jobNum++;
-        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.splitAssignedTo===i.id?' selected':'')+'>'+i.name+(i.unavailable?' ⊘':'')+'</option>';}).join('');
-        var reasonNote=j.splitReason?'<div style="font-size:10px;color:#d97706;margin-top:2px;font-style:italic;padding:4px;background:#fffbf0;border-radius:4px">💡 Split because: '+j.splitReason+'</div>':'';
+        var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.splitAssignedTo===i.id?' selected':'')+'>'+escapeHtml(i.name)+(i.unavailable?' ⊘':'')+'</option>';}).join('');
+        var reasonNote=j.splitReason?'<div style="font-size:10px;color:#d97706;margin-top:2px;font-style:italic;padding:4px;background:#fffbf0;border-radius:4px">💡 Split because: '+escapeHtml(j.splitReason)+'</div>':'';
         html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start">'
           +'<span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span>'
           +'<div style="flex:1;min-width:0">'
-            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+' <span style="color:#888;font-weight:400">(sewer only)</span></div>'
+            +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(j.display)+' <span style="color:#888;font-weight:400">(sewer only)</span></div>'
             +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="est-badge svc">'+fmtMins(SVC_MINS.sewer)+'</span></div>'
             +reasonNote
             +(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')
