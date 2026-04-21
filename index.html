@@ -242,8 +242,12 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v14 — Google Maps integration (current)</div>
-          <div style="color:#888">Replaced Leaflet with Google Maps for better map quality and features. Added Google Places Autocomplete to address inputs — eliminates typos and ensures accurate address matching. Upgraded geocoding to use Google Geocoding API for more reliable address-to-coordinates conversion. Integrated Distance Matrix API for future use in calculating actual road-based driving times. Improved markers with custom canvas-drawn icons for better visual clarity on the map.</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v15 — Smart splits & real drive times (current)</div>
+          <div style="color:#888">Added transparency to split logic — now shows WHY each Gas+Sewer job was split (no dual-certified available, workload balance, etc.). Implemented post-assignment drive time refinement using Google Distance Matrix API for more accurate road-based times instead of straight-line estimates. Clarified that Radon and Mold are ALWAYS bonded together and never split. Improved Office/Midday Waypoint logic documentation — it chooses the closer location (home vs office) between AM and PM jobs for optimal routing.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v14 — Google Maps integration</div>
+          <div style="color:#888">Replaced Leaflet with Google Maps for better map quality and features. Added Google Places Autocomplete to address inputs — eliminates typos and ensures accurate address matching. Upgraded geocoding to use Google Geocoding API for more reliable address-to-coordinates conversion. Integrated Distance Matrix API for calculating actual road-based driving times. Improved markers with custom canvas-drawn icons for better visual clarity on the map.</div>
         </div>
         <div style="margin-bottom:12px">
           <div style="font-weight:600;color:#111;margin-bottom:2px">v13 — Property types, split reassignment & bulk import</div>
@@ -432,6 +436,48 @@ function getDriveMinutes(fromLat, fromLng, toLat, toLng){
         resolve(Math.ceil((miles/45)*60));
       }
     });
+  });
+}
+
+// Refine drive times after auto-assign using actual road distances
+function refineDriveTimes(){
+  setStatus('Calculating actual drive times…');
+  var promises=[];
+  inspectors.forEach(function(insp){
+    var assignedJobs=jobs.filter(function(j){return j.assignedTo===insp.id;});
+    var splitJobs=jobs.filter(function(j){return j.splitAssignedTo===insp.id;});
+    var all=assignedJobs.concat(splitJobs);
+    if(!all.length) return;
+
+    var amJobs=all.filter(function(j){return j.window==='AM';});
+    var pmJobs=all.filter(function(j){return j.window==='PM';});
+
+    if(amJobs.length){
+      promises.push(getDriveMinutes(insp.lat,insp.lng,amJobs[0].lat,amJobs[0].lng));
+      for(var i=1;i<amJobs.length;i++) promises.push(getDriveMinutes(amJobs[i-1].lat,amJobs[i-1].lng,amJobs[i].lat,amJobs[i].lng));
+      if(pmJobs.length && office){
+        var lastAM=amJobs[amJobs.length-1];
+        promises.push(getDriveMinutes(lastAM.lat,lastAM.lng,insp.lat,insp.lng));
+        promises.push(getDriveMinutes(lastAM.lat,lastAM.lng,office.lat,office.lng));
+      }else if(!pmJobs.length){
+        promises.push(getDriveMinutes(amJobs[amJobs.length-1].lat,amJobs[amJobs.length-1].lng,insp.lat,insp.lng));
+      }
+    }
+    if(pmJobs.length){
+      var pmStart=insp;
+      if(amJobs.length && office) pmStart=office;
+      promises.push(getDriveMinutes(pmStart.lat,pmStart.lng,pmJobs[0].lat,pmJobs[0].lng));
+      for(var i=1;i<pmJobs.length;i++) promises.push(getDriveMinutes(pmJobs[i-1].lat,pmJobs[i-1].lng,pmJobs[i].lat,pmJobs[i].lng));
+      promises.push(getDriveMinutes(pmJobs[pmJobs.length-1].lat,pmJobs[pmJobs.length-1].lng,insp.lat,insp.lng));
+    }
+  });
+
+  Promise.all(promises).then(function(){
+    setStatus('Drive times refined with actual road distances.');
+    renderResults();
+  }).catch(function(){
+    setStatus('Could not refine all drive times, using estimates.');
+    renderResults();
   });
 }
 
@@ -800,7 +846,7 @@ function runAssignment(){
   // Reset all assignments
   jobs.forEach(function(j){
     j.assignedTo=null;j.distFromHome=null;j.certConflict=false;
-    j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;
+    j.splitService=null;j.splitAssignedTo=null;j.splitDist=null;j.splitReason=null;
   });
 
   // Live tracking: primary assigned jobs and split (sewer-add-on) jobs per inspector
@@ -887,10 +933,12 @@ function runAssignment(){
         }
 
         // Decide: split vs single
+        var splitReason=null;
         if(bestGas && bestSew){
           if(!bestDual){
             // No dual available — must split
             shouldSplit=true;
+            splitReason='No dual-certified inspector available';
           }else{
             // Both options available — check if splitting gives better balance
             // Check if ANY inspector with requests already has work in this window
@@ -904,18 +952,22 @@ function runAssignment(){
             // prefer splitting to balance instead of overloading another dual inspector
             if(anyoneHasRequest && sewLoad < dualLoad * 0.5){
               shouldSplit=true;
+              splitReason='Balances workload (requested job + light sewer inspector)';
             }else if(sewLoad < dualLoad * 0.3){
               // Even without requests, if sewer inspector is very light, split aggressively
               shouldSplit=true;
+              splitReason='Sewer specialist significantly lighter than dual-certified';
             }
           }
         }else if(!bestDual && bestGas && bestSew){
           shouldSplit=true;
+          splitReason='Only single-service inspectors available';
         }
 
         if(shouldSplit && bestGas && bestSew){
           job.assignedTo=bestGas.id; job.distFromHome=hav(bestGas,job);
           job.splitService='sewer'; job.splitAssignedTo=bestSew.id; job.splitDist=hav(bestSew,job);
+          job.splitReason=splitReason;
           assigned[bestGas.id].push(job); splits[bestSew.id].push(job);
           return;
         }
@@ -942,6 +994,9 @@ function runAssignment(){
   var c=jobs.filter(function(j){return j.certConflict;}).length;
   var sp=jobs.filter(function(j){return j.splitAssignedTo;}).length;
   setStatus('Assigned '+jobs.filter(function(j){return j.assignedTo;}).length+' job(s)'+(sp?' · '+sp+' split':'')+(c?' · '+c+' conflict(s)':'')+'.');
+
+  // Refine drive times with actual road distances (async)
+  setTimeout(refineDriveTimes, 500);
 }
 
 // ── Render helpers ────────────────────────────────────
@@ -1068,11 +1123,13 @@ function renderResults(){
       mySp.forEach(function(j){
         jobNum++;
         var oo='<option value="">Unassign</option>'+inspectors.map(function(i){return'<option value="'+i.id+'"'+(j.splitAssignedTo===i.id?' selected':'')+'>'+i.name+(i.unavailable?' ⊘':'')+'</option>';}).join('');
+        var reasonNote=j.splitReason?'<div style="font-size:10px;color:#d97706;margin-top:2px;font-style:italic;padding:4px;background:#fffbf0;border-radius:4px">💡 Split because: '+j.splitReason+'</div>':'';
         html+='<div style="padding:6px 0;border-bottom:1px solid #eee"><div style="display:flex;gap:6px;align-items:flex-start">'
           +'<span style="font-size:11px;color:#aaa;min-width:16px;text-align:right;padding-top:1px">'+jobNum+'.</span>'
           +'<div style="flex:1;min-width:0">'
             +'<div style="font-size:12px;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+j.display+' <span style="color:#888;font-weight:400">(sewer only)</span></div>'
             +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px"><span class="tag t-sewer">Sewer</span><span class="est-badge svc">'+fmtMins(SVC_MINS.sewer)+'</span></div>'
+            +reasonNote
             +(j.splitDist!=null?'<div style="font-size:11px;color:#aaa;margin-top:1px">'+j.splitDist.toFixed(1)+' mi from home</div>':'')
             +'<div class="or-row"><select id="sr-'+j.id+'">'+oo+'</select><button class="btn" onclick="manualOverrideSplit('+j.id+')">Reassign</button></div>'
           +'</div></div></div>';
