@@ -619,6 +619,7 @@ function initServiceAssignments(job){
       gas: null, sewer: null, radon: null, mold: null
     };
   }
+  if(!job.notes) job.notes='';
 }
 
 // Get all assigned inspectors for a job's services
@@ -934,7 +935,7 @@ function addJob(){
     if(!loc){setStatus('Address not found. Try adding a zip code.');return;}
     var r={}; SVC.forEach(function(s){r[s]=document.getElementById('f-j-'+s).checked;});
     var newJob={id:Date.now(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:curWin,
-      gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,proptype:proptype,
+      gas:r.gas,sewer:r.sewer,radon:r.radon,mold:r.mold,proptype:proptype,notes:'',
       requestedIds:curReqIds.slice(),excludedIds:curExcIds.slice(),
       serviceAssignments:{gas:null,sewer:null,radon:null,mold:null}};
     jobs.push(newJob);
@@ -1032,8 +1033,8 @@ function importSchedule(){
       if(loc){
         jobs.push({id:Date.now()+Math.random(),addr:addr,lat:loc.lat,lng:loc.lng,display:loc.display,window:job.window,
           gas:job.gas,sewer:job.sewer,radon:job.radon,mold:job.mold,proptype:'single',
-          requestedIds:[],excludedIds:[],
-          assignedTo:null,distFromHome:null,certConflict:false,splitService:null,splitAssignedTo:null,splitDist:null});
+          requestedIds:[],excludedIds:[],notes:'',
+          serviceAssignments:{gas:null,sewer:null,radon:null,mold:null}});
         save(); renderAll();
       }
     });
@@ -1085,6 +1086,7 @@ function saveEditJ(id){
     SVC.forEach(function(s){j[s]=document.getElementById('ej-'+s+'-'+id).checked;});
     j.requestedIds=(editReqIds[id]||[]).slice();j.excludedIds=(editExcIds[id]||[]).slice();
     // Reset assignments when services change
+    j.notes=notes;
     initServiceAssignments(j);
     SVC.forEach(function(s){
       if(!j[s]) j.serviceAssignments[s]=null;
@@ -1351,12 +1353,27 @@ function renderJobList(){
       var ePills=inspectors.map(function(i){return'<span class="mpill'+(j.excludedIds.indexOf(i.id)>=0?' exc-on':'')+'" id="eep-'+j.id+'-'+i.id+'" onclick="toggleEditExcPill('+j.id+','+i.id+')">'+escapeHtml(i.name)+'</span>';}).join('');
       return'<div class="edit-box"><div class="edit-title">Editing job</div><input type="text" id="ej-addr-'+j.id+'" value="'+escapeHtml(j.addr)+'"><div class="win-toggle"><button class="win-btn '+(w==='AM'?'am':'off')+'" id="ej-am-'+j.id+'" onclick="setEditWin('+j.id+',\'AM\')">AM · 9–12</button><button class="win-btn '+(w==='PM'?'pm':'off')+'" id="ej-pm-'+j.id+'" onclick="setEditWin('+j.id+',\'PM\')">PM · 2–5</button></div><div class="pills">'+cp+'</div><div class="drop-label">Requested inspector(s)</div><div class="multi-pick">'+rPills+'</div><div class="drop-label">Excluded inspector(s)</div><div class="multi-pick">'+ePills+'</div><textarea id="ej-notes-'+j.id+'" placeholder="Notes…">'+escapeHtml(j.notes||'')+'</textarea><div class="btn-row"><button class="btn dark" onclick="saveEditJ('+j.id+')">Save</button><button class="btn" onclick="cancelEditJ()">Cancel</button></div></div>';
     }
-    var insp=inspectors.find(function(i){return i.id===j.assignedTo;}), color=insp?insp.color:'#ccc';
+    // Get color from first assigned service (Gas > Sewer > Radon/Mold)
+    var assignedInspId=null, color='#ccc';
+    if(!j.serviceAssignments) initServiceAssignments(j);
+    var svcOrder=['gas','sewer','radon','mold'];
+    for(var si=0;si<svcOrder.length;si++){
+      if(j[svcOrder[si]]&&j.serviceAssignments[svcOrder[si]]){assignedInspId=j.serviceAssignments[svcOrder[si]];break;}
+    }
+    if(assignedInspId){var insp=inspectors.find(function(i){return i.id===assignedInspId;});color=insp?insp.color:'#ccc';}
     var wt='<span class="tag t-'+j.window.toLowerCase()+'">'+j.window+' '+(j.window==='AM'?'9–12':'2–5')+'</span>';
     var st=svcTags(j,null);
     var rt=j.requestedIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?'<span class="tag t-req">Req: '+escapeHtml(i.name)+'</span>':'';}).join('');
     var et=j.excludedIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?'<span class="tag t-exc">Not: '+escapeHtml(i.name)+'</span>':'';}).join('');
-    var at=insp?'<span style="color:'+insp.color+';font-weight:600">'+escapeHtml(insp.name)+'</span>':'<span class="tag t-warn">unassigned</span>';
+    // Show assigned services with inspector names
+    var assignTags=[];
+    SVC.forEach(function(s){
+      if(j[s]&&j.serviceAssignments[s]){
+        var inspector=inspectors.find(function(i){return i.id===j.serviceAssignments[s];});
+        if(inspector) assignTags.push('<span style="color:'+inspector.color+';font-weight:600;font-size:11px">'+s.charAt(0).toUpperCase()+': '+escapeHtml(inspector.name)+'</span>');
+      }
+    });
+    var at=assignTags.length>0?assignTags.join(' ◆ '):'<span class="tag t-warn">unassigned</span>';
     var svcM=jobSvcMins(j,null);
     var eb=svcM?'<span class="est-badge svc">'+fmtMins(svcM)+'</span>':'';
     return'<div class="jrow"><div class="jbar" style="background:'+color+'"></div><div class="jinfo"><div class="jaddr">'+escapeHtml(j.display)+'</div><div class="jmeta">'+wt+st+rt+et+at+eb+'</div></div><button class="bicon" onclick="startEditJ('+j.id+')">✎</button><button class="bicon red" onclick="removeJob('+j.id+')">×</button></div>';
