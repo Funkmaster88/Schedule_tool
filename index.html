@@ -452,6 +452,26 @@ function initializeApp(){
   // Initialize map and other components after Google Maps loads
   if(map){console.log('initializeApp: Map already initialized');return;} // Already initialized
   console.log('initializeApp: Creating map');
+
+  // Initialize Google Places Autocomplete (only after google object is available)
+  console.log('initializeApp: Setting up Places Autocomplete');
+  var autocompleteOptions={types:['geocode'],componentRestrictions:{country:'us'}};
+  try{
+    new google.maps.places.Autocomplete(document.getElementById('f-office-addr'),autocompleteOptions);
+    console.log('initializeApp: Office address autocomplete initialized');
+  }catch(e){console.error('initializeApp: Office autocomplete ERROR:', e.message);}
+
+  var jobAddrs=document.querySelectorAll('input[id*="addr"]');
+  console.log('initializeApp: Found '+jobAddrs.length+' address input fields');
+  jobAddrs.forEach(function(input){
+    if(input.id!=='f-office-addr'){
+      try{
+        new google.maps.places.Autocomplete(input,autocompleteOptions);
+        console.log('initializeApp: Autocomplete initialized for '+input.id);
+      }catch(e){console.error('initializeApp: Autocomplete ERROR for '+input.id+':', e.message);}
+    }
+  });
+
   map = new google.maps.Map(document.getElementById('map'), {
     center: {lat: STL[0], lng: STL[1]},
     zoom: 11,
@@ -510,27 +530,8 @@ window.addEventListener('load', function(){
   document.getElementById('set-office-btn').addEventListener('click', setOffice);
   document.getElementById('import-btn').addEventListener('click', importSchedule);
 
-  // Initialize Google Places Autocomplete
-  console.log('initializeApp: Setting up Places Autocomplete');
-  var autocompleteOptions={types:['geocode'],componentRestrictions:{country:'us'}};
-  try{
-    new google.maps.places.Autocomplete(document.getElementById('f-office-addr'),autocompleteOptions);
-    console.log('initializeApp: Office address autocomplete initialized');
-  }catch(e){console.error('initializeApp: Office autocomplete ERROR:', e.message);}
-
-  // Note: Add more autocomplete fields here for job address inputs when needed
-  var jobAddrs=document.querySelectorAll('input[id*="addr"]');
-  console.log('initializeApp: Found '+jobAddrs.length+' address input fields');
-  jobAddrs.forEach(function(input){
-    if(input.id!=='f-office-addr'){
-      try{
-        new google.maps.places.Autocomplete(input,autocompleteOptions);
-        console.log('initializeApp: Autocomplete initialized for '+input.id);
-      }catch(e){console.error('initializeApp: Autocomplete ERROR for '+input.id+':', e.message);}
-    }
-  });
-
-  renderAll(); renderOffice();
+  // Note: Google Maps and rendering will happen in initializeApp() after API loads
+  console.log('Boot: Setup complete, waiting for Google Maps API to load');
 });
 
 function setStatus(msg){ document.getElementById('sbar').textContent=msg; }
