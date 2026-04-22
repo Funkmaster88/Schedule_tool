@@ -600,13 +600,15 @@ function refineDriveTimes(){
   setStatus('Calculating actual drive times…');
   var promises=[];
   inspectors.forEach(function(insp){
-    var assignedJobs=jobs.filter(function(j){return j.assignedTo===insp.id;});
-    var splitJobs=jobs.filter(function(j){return j.splitAssignedTo===insp.id;});
-    var all=assignedJobs.concat(splitJobs);
-    if(!all.length) return;
+    // Get jobs assigned to this inspector via new service-based assignments
+    var jobsForInsp=jobs.filter(function(j){
+      initServiceAssignments(j);
+      return SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===insp.id;});
+    });
+    if(!jobsForInsp.length) return;
 
-    var amJobs=all.filter(function(j){return j.window==='AM';});
-    var pmJobs=all.filter(function(j){return j.window==='PM';});
+    var amJobs=jobsForInsp.filter(function(j){return j.window==='AM';});
+    var pmJobs=jobsForInsp.filter(function(j){return j.window==='PM';});
 
     if(amJobs.length){
       promises.push(getDriveMinutes(insp.lat,insp.lng,amJobs[0].lat,amJobs[0].lng));
@@ -1194,119 +1196,167 @@ function calcInspectorWorkload(inspId, window){
   }, 0);
 }
 
+// ── GEOGRAPHIC CLUSTERING & NEW ASSIGNMENT ALGORITHM ──────────
+// Calculate distance between two lat/lng points (in miles, using Haversine)
+function calculateDistance(lat1, lng1, lat2, lng2){
+  var R=3959; // Earth radius in miles
+  var dLat=(lat2-lat1)*Math.PI/180;
+  var dLng=(lng2-lng1)*Math.PI/180;
+  var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
+  var c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  return R*c;
+}
+
+// Group jobs into geographic clusters (jobs within ~5 miles of each other)
+function createJobClusters(jobList){
+  var clusters=[];
+  var assigned={};
+  var CLUSTER_RADIUS=5; // miles
+
+  jobList.forEach(function(job, idx){
+    if(assigned[idx]) return;
+
+    var cluster=[job];
+    assigned[idx]=true;
+
+    // Find all jobs close to this one
+    jobList.forEach(function(otherJob, otherIdx){
+      if(assigned[otherIdx]) return;
+      var dist=calculateDistance(job.lat, job.lng, otherJob.lat, otherJob.lng);
+      if(dist<CLUSTER_RADIUS){
+        cluster.push(otherJob);
+        assigned[otherIdx]=true;
+      }
+    });
+
+    // Calculate cluster centroid
+    var centerLat=cluster.reduce(function(sum,j){return sum+j.lat;},0)/cluster.length;
+    var centerLng=cluster.reduce(function(sum,j){return sum+j.lng;},0)/cluster.length;
+
+    clusters.push({
+      jobs: cluster,
+      centerLat: centerLat,
+      centerLng: centerLng
+    });
+  });
+
+  return clusters;
+}
+
+// Assign clusters to inspectors based on home location proximity
+function assignClustersToInspectors(clusters){
+  var clusterAssignments={}; // clusterIndex -> inspectorId
+  var assignedClusters=new Set();
+
+  // First pass: assign clusters to closest inspector (respecting certifications)
+  clusters.forEach(function(cluster, clusterIdx){
+    var bestInsp=null;
+    var bestDist=Infinity;
+
+    inspectors.forEach(function(insp){
+      // Check if inspector can handle all jobs in this cluster
+      var canHandle=cluster.jobs.every(function(job){
+        return SVC.every(function(s){
+          return !job[s] || insp[s]; // Either service not needed or inspector certified
+        });
+      });
+
+      if(!canHandle) return;
+
+      var dist=calculateDistance(insp.lat, insp.lng, cluster.centerLat, cluster.centerLng);
+      if(dist<bestDist){
+        bestDist=dist;
+        bestInsp=insp.id;
+      }
+    });
+
+    if(bestInsp){
+      clusterAssignments[clusterIdx]=bestInsp;
+      assignedClusters.add(clusterIdx);
+    }
+  });
+
+  return {assignments: clusterAssignments, assigned: assignedClusters};
+}
+
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
 
-  // Reset all assignments to new service-based model
-  decisionLog=[]; // Reset decision log
+  console.log('=== NEW GEOGRAPHIC ASSIGNMENT STARTING ===');
+  decisionLog=[];
+
+  // Reset all assignments
   jobs.forEach(function(j){
     initServiceAssignments(j);
     SVC.forEach(function(s){j.serviceAssignments[s]=null;});
   });
 
-  // NEW: Track workload per inspector across all services
-  var svcAssigned={}; // svcAssigned[inspId] = array of jobs with services assigned
-  inspectors.forEach(function(i){svcAssigned[i.id]=[];});
-
-  // Process jobs by window
+  // Process each time window separately (AM and PM have independent territories)
   ['AM','PM'].forEach(function(win){
-    var wj=jobs.filter(function(j){return j.window===win;});
-    if(!wj.length) return;
+    var jobsInWindow=jobs.filter(function(j){return j.window===win;});
+    if(!jobsInWindow.length) return;
 
-    var avail=inspectors.filter(function(i){return !i.unavailable;});
-    if(!avail.length) avail=inspectors.slice();
+    console.log('Processing '+win+' window with '+jobsInWindow.length+' jobs');
 
-    // ── Assign each job's services ─────────────────
-    wj.forEach(function(job){
-      var excIds=job.excludedIds||[];
-      var pool=avail.filter(function(i){return excIds.indexOf(i.id)<0;});
-      if(!pool.length) pool=inspectors.filter(function(i){return excIds.indexOf(i.id)<0;});
-      if(!pool.length) pool=inspectors.slice();
+    // Step 1: Create geographic clusters of nearby jobs
+    var clusters=createJobClusters(jobsInWindow);
+    console.log(win+': Created '+clusters.length+' geographic clusters');
 
-      initServiceAssignments(job);
-      var reqIds=job.requestedIds||[];
+    // Step 2: Assign clusters to inspectors
+    var clusterAssign=assignClustersToInspectors(clusters);
+    var clusterAssignments=clusterAssign.assignments;
 
-      // Track reasoning for this job
-      var jobReasoning={address:job.display,window:win,decisions:[],notes:[]};
+    // Step 3: Within each cluster, assign all services at same location to same inspector
+    clusters.forEach(function(cluster, clusterIdx){
+      var inspectorId=clusterAssignments[clusterIdx];
+      if(!inspectorId) return; // Unassigned cluster
 
-      // Add notes for requests/exclusions
-      if(reqIds.length){
-        var reqNames=reqIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
-        jobReasoning.notes.push('🎯 Requested: '+reqNames.join(', '));
-      }
-      if(excIds.length){
-        var excNames=excIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
-        jobReasoning.notes.push('⛔ Excluded: '+excNames.join(', '));
-      }
+      var insp=inspectors.find(function(i){return i.id===inspectorId;});
+      console.log(win+' Cluster '+clusterIdx+': Assigned to '+insp.name+' ('+cluster.jobs.length+' job(s))');
 
-      // Assign Gas
-      if(job.gas){
-        var gasPool=pool.filter(function(i){return i.gas;});
-        if(!gasPool.length) gasPool=pool;
-        var priorityPool=gasPool;
-        var requestHonored=false;
+      // Group jobs by location (address)
+      var locationGroups={};
+      cluster.jobs.forEach(function(job){
+        if(!locationGroups[job.id]) locationGroups[job.id]={jobs:[], lat:job.lat, lng:job.lng};
+        locationGroups[job.id].jobs.push(job);
+      });
+
+      // Assign all services at each location to the same inspector
+      Object.keys(locationGroups).forEach(function(locKey){
+        var locGroup=locationGroups[locKey];
+        var job=locGroup.jobs[0]; // All jobs at same location
+
+        initServiceAssignments(job);
+        var jobReasoning={address:job.display, window:win, decisions:[], notes:[]};
+
+        // Check for requests/exclusions
+        var reqIds=job.requestedIds||[];
+        var excIds=job.excludedIds||[];
+
         if(reqIds.length){
-          priorityPool=gasPool.filter(function(i){return reqIds.indexOf(i.id)>=0;});
-          if(priorityPool.length) requestHonored=true;
+          var reqNames=reqIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
+          jobReasoning.notes.push('🎯 Requested: '+reqNames.join(', '));
         }
-        if(!priorityPool.length) priorityPool=gasPool;
-        var bestGas=priorityPool.slice().sort(function(a,b){
-          return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
-        })[0];
-        if(bestGas){
-          job.serviceAssignments.gas=bestGas.id;
-          var reason=requestHonored?'Request honored: assigned to '+bestGas.name:'Lightest available: '+bestGas.name+' (~'+fmtMins(calcInspectorWorkload(bestGas.id,win))+')';
-          jobReasoning.decisions.push({service:'Gas',inspector:bestGas.name,reason:reason});
+        if(excIds.length){
+          var excNames=excIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
+          jobReasoning.notes.push('⛔ Excluded: '+excNames.join(', '));
         }
-      }
 
-      // Assign Sewer (prefer same as Gas if possible)
-      if(job.sewer){
-        var sewPool=pool.filter(function(i){return i.sewer;});
-        if(!sewPool.length) sewPool=pool;
-        // Prefer to assign sewer to same inspector as gas
-        var prefersame=job.serviceAssignments.gas && sewPool.some(function(i){return i.id===job.serviceAssignments.gas;});
-        if(prefersame){
-          job.serviceAssignments.sewer=job.serviceAssignments.gas;
-          var gasInsp=inspectors.find(function(i){return i.id===job.serviceAssignments.gas;});
-          jobReasoning.decisions.push({service:'Sewer',inspector:gasInsp.name,reason:'Kept with Gas to minimize inspectors per location'});
-        }else{
-          var bestSew=sewPool.slice().sort(function(a,b){
-            return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
-          })[0];
-          if(bestSew){
-            job.serviceAssignments.sewer=bestSew.id;
-            var gasInsp=job.serviceAssignments.gas?inspectors.find(function(i){return i.id===job.serviceAssignments.gas;}):null;
-            var reason=gasInsp?'Sewer specialist available (Gas on '+gasInsp.name+', sewer lighter)':'Lightest available: '+bestSew.name;
-            jobReasoning.decisions.push({service:'Sewer',inspector:bestSew.name,reason:reason});
+        // Assign all services to the cluster's inspector
+        SVC.forEach(function(s){
+          if(job[s]){
+            job.serviceAssignments[s]=inspectorId;
+            jobReasoning.decisions.push({service:s.charAt(0).toUpperCase()+s.slice(1), inspector:insp.name, reason:'Geographic cluster assignment'});
           }
-        }
-      }
-
-      // Assign Radon + Mold together (always bonded)
-      if(job.radon || job.mold){
-        var rmPool=pool.filter(function(i){
-          return (job.radon?i.radon:true) && (job.mold?i.mold:true);
         });
-        if(!rmPool.length) rmPool=pool;
-        var bestRM=rmPool.slice().sort(function(a,b){
-          return calcInspectorWorkload(a.id,win)-calcInspectorWorkload(b.id,win);
-        })[0];
-        if(bestRM){
-          if(job.radon) job.serviceAssignments.radon=bestRM.id;
-          if(job.mold) job.serviceAssignments.mold=bestRM.id;
-          var svcs=[];
-          if(job.radon) svcs.push('Radon');
-          if(job.mold) svcs.push('Mold');
-          jobReasoning.decisions.push({service:svcs.join('+'),inspector:bestRM.name,reason:'Always bonded together. Lightest available: '+bestRM.name});
-        }
-      }
 
-      if(jobReasoning.decisions.length) decisionLog.push(jobReasoning);
+        if(jobReasoning.decisions.length) decisionLog.push(jobReasoning);
+      });
     });
   });
 
+  console.log('=== GEOGRAPHIC ASSIGNMENT COMPLETE ===');
   save(); renderAll(); switchTab('results'); buildExport();
 
   // Count assigned services
@@ -1319,9 +1369,9 @@ function runAssignment(){
   var activeInspCount=0;
   inspectors.forEach(function(i){if(touchCount(i)>0) activeInspCount++;});
 
-  setStatus('Assigned '+assignedCount+' service(s) across '+activeInspCount+' inspector(s).');
+  setStatus('Assigned '+assignedCount+' service(s) across '+activeInspCount+' inspector(s) using geographic clustering.');
 
-  // Refine drive times with actual road distances (async) - with rate limiting to prevent API abuse
+  // Refine drive times with actual road distances (async)
   setTimeout(refineDriveTimesRateLimited, 500);
 }
 
@@ -1612,18 +1662,32 @@ function importSettings(){
 }
 
 function renderMap(){
-  if(!map){console.log('renderMap: Map not initialized yet');return;}
-  layers.forEach(function(l){l.setMap(null);}); layers=[];
+  console.log('renderMap: Starting, map exists:', !!map);
+  if(!map){console.log('renderMap: Map not ready, skipping render');return;}
+  try{
+    layers.forEach(function(l){l.setMap(null);});
+  }catch(e){}
+  layers=[];
   var bounds=new google.maps.LatLngBounds(); var hasBounds=false;
+
+  // Office marker
   if(office){
-    var om=new google.maps.Marker({position:{lat:office.lat,lng:office.lng},map:map,title:'Office',icon:'http://maps.google.com/mapfiles/kml/paddle/orange-circle.png'});
-    om.addListener('click',function(){new google.maps.InfoWindow({content:'<b>Office / Midday Waypoint</b><br>'+office.display}).open(map,om);});
-    layers.push(om); bounds.extend({lat:office.lat,lng:office.lng}); hasBounds=true;
+    try{
+      var om=new google.maps.Marker({position:{lat:office.lat,lng:office.lng},map:map,title:'Office',icon:'http://maps.google.com/mapfiles/kml/paddle/orange-circle.png'});
+      om.addListener('click',function(){new google.maps.InfoWindow({content:'<b>Office / Midday Waypoint</b><br>'+office.display}).open(map,om);});
+      layers.push(om); bounds.extend({lat:office.lat,lng:office.lng}); hasBounds=true;
+      console.log('renderMap: Office marker created');
+    }catch(e){console.error('renderMap: Error creating office marker:', e.message);}
   }
+
+  // Inspector home pins
+  console.log('renderMap: Drawing '+inspectors.length+' inspector pins');
   inspectors.forEach(function(insp){
-    var im=new google.maps.Marker({position:{lat:insp.lat,lng:insp.lng},map:map,title:insp.name,icon:createDotIcon(insp.color,insp.unavailable)});
-    im.addListener('click',function(){new google.maps.InfoWindow({content:'<b>'+insp.name+'</b>'+(insp.unavailable?'<br><span style="color:#b91c1c;font-size:11px">Unavailable</span>':'')+'<br>Home base'}).open(map,im);});
-    layers.push(im); bounds.extend({lat:insp.lat,lng:insp.lng}); hasBounds=true;
+    try{
+      var im=new google.maps.Marker({position:{lat:insp.lat,lng:insp.lng},map:map,title:insp.name,icon:createDotIcon(insp.color,insp.unavailable)});
+      im.addListener('click',function(){new google.maps.InfoWindow({content:'<b>'+insp.name+'</b>'+(insp.unavailable?'<br><span style="color:#b91c1c;font-size:11px">Unavailable</span>':'')+'<br>Home base'}).open(map,im);});
+      layers.push(im); bounds.extend({lat:insp.lat,lng:insp.lng}); hasBounds=true;
+    }catch(e){console.error('renderMap: Error creating inspector marker for '+insp.name+':', e.message);}
   });
   // NEW: Show jobs with service assignment markers
   jobs.forEach(function(job,idx){
