@@ -1477,33 +1477,20 @@ function runAssignment(){
     SVC.forEach(function(s){j.serviceAssignments[s]=null;});
   });
 
-  // Sort each window's jobs independently: Gas+Sewer combos first (heaviest first),
-  // then single-service lightest first so load spreads naturally within each window.
+  // Sort order: Gas+Sewer → Sewer → Gas → Radon/Mold
+  // AM fully processed before PM so PM jobs don't preload inspectors
+  function svcRank(j){
+    if(j.gas&&j.sewer) return 0;
+    if(j.sewer)        return 1;
+    if(j.gas)          return 2;
+    return 3; // Radon/Mold
+  }
   function sortJobsForAssignment(jobList){
-    return jobList.slice().sort(function(a,b){
-      var aGS=(a.gas&&a.sewer)?1:0, bGS=(b.gas&&b.sewer)?1:0;
-      if(aGS!==bGS) return bGS-aGS;
-      var aMins=jobSvcMins(a,null), bMins=jobSvcMins(b,null);
-      if(aGS && bGS) return bMins-aMins;
-      return aMins-bMins;
-    });
+    return jobList.slice().sort(function(a,b){ return svcRank(a)-svcRank(b); });
   }
 
-  var allSorted=sortJobsForAssignment(jobs);
-
-  // Phase 1: all Gas+Sewer combos across both windows (heaviest, most constrained)
-  // Phase 2: all single-service jobs interleaved AM/PM so neither window preloads inspectors
-  //          before the other window has had a chance to distribute work
-  var combos=allSorted.filter(function(j){return j.gas&&j.sewer;});
-  var amSingles=allSorted.filter(function(j){return !(j.gas&&j.sewer)&&j.window==='AM';});
-  var pmSingles=allSorted.filter(function(j){return !(j.gas&&j.sewer)&&j.window==='PM';});
-
-  var sortedJobs=combos.slice();
-  var maxLen=Math.max(amSingles.length, pmSingles.length);
-  for(var wi=0; wi<maxLen; wi++){
-    if(wi < amSingles.length) sortedJobs.push(amSingles[wi]);
-    if(wi < pmSingles.length) sortedJobs.push(pmSingles[wi]);
-  }
+  var sortedJobs=sortJobsForAssignment(jobs.filter(function(j){return j.window==='AM';}))
+    .concat(sortJobsForAssignment(jobs.filter(function(j){return j.window==='PM';})));
 
   // Reorder the jobs array to match so the Jobs tab display reflects assignment order
   jobs=sortedJobs;
