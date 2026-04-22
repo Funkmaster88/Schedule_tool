@@ -277,7 +277,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       </div>
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
-          <div style="font-weight:600;color:#111;margin-bottom:2px">v17 — Enhanced security & API rate limiting (current)</div>
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v18 — Full-day drive-aware assignment (current)</div>
+          <div style="color:#888">Replaced geographic clustering with a smarter per-job greedy algorithm. Assignment now uses full-day workload (AM + PM combined, including estimated drive time at 45 mph) as the primary cost function — eliminating the problem where one window was overloaded while another was empty. Gas+Sewer jobs are assigned to the best dual-certified inspector available, with a balance-triggered split pass as a fallback. Jobs are sorted heaviest-first so constrained jobs get first pick of inspectors. Balance pass now simulates actual workload change before committing any split, using full-day totals instead of per-window max.</div>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;color:#111;margin-bottom:2px">v17 — Enhanced security & API rate limiting</div>
           <div style="color:#888">Added HTTPS warning banner to alert users if served over insecure HTTP connection. Implemented HTML escaping (XSS prevention) for all user input (addresses, names, notes) before display. Added rate limiting on Distance Matrix API calls — minimum 60-second cooldown between drive time refinements to prevent accidental API overuse. Updated USER_GUIDE with comprehensive security section and Google Maps API cost breakdown. All security features work transparently without user action.</div>
         </div>
         <div style="margin-bottom:12px">
@@ -1215,10 +1219,10 @@ function calcInspectorWorkload(inspId, window){
   }, 0);
 }
 
-// ── GEOGRAPHIC CLUSTERING & NEW ASSIGNMENT ALGORITHM ──────────
+// ── FULL-DAY WORKLOAD CALCULATION ─────────────────────
 // Calculate distance between two lat/lng points (in miles, using Haversine)
 function calculateDistance(lat1, lng1, lat2, lng2){
-  var R=3959; // Earth radius in miles
+  var R=3959;
   var dLat=(lat2-lat1)*Math.PI/180;
   var dLng=(lng2-lng1)*Math.PI/180;
   var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
@@ -1226,139 +1230,153 @@ function calculateDistance(lat1, lng1, lat2, lng2){
   return R*c;
 }
 
-// Group jobs into geographic clusters (jobs within ~5 miles of each other)
-function createJobClusters(jobList){
-  var clusters=[];
-  var assigned={};
-  var CLUSTER_RADIUS=5; // miles
+// Estimate full-day total minutes for an inspector including drive times from home
+// This is the ONLY metric used for balancing — AM and PM are always combined
+function calcFullDayWorkload(inspId){
+  var insp=inspectors.find(function(i){return i.id===inspId;});
+  if(!insp) return 0;
 
-  jobList.forEach(function(job, idx){
-    if(assigned[idx]) return;
-
-    var cluster=[job];
-    assigned[idx]=true;
-
-    // Find all jobs close to this one
-    jobList.forEach(function(otherJob, otherIdx){
-      if(assigned[otherIdx]) return;
-      var dist=calculateDistance(job.lat, job.lng, otherJob.lat, otherJob.lng);
-      if(dist<CLUSTER_RADIUS){
-        cluster.push(otherJob);
-        assigned[otherIdx]=true;
-      }
-    });
-
-    // Calculate cluster centroid
-    var centerLat=cluster.reduce(function(sum,j){return sum+j.lat;},0)/cluster.length;
-    var centerLng=cluster.reduce(function(sum,j){return sum+j.lng;},0)/cluster.length;
-
-    clusters.push({
-      jobs: cluster,
-      centerLat: centerLat,
-      centerLng: centerLng
-    });
+  var amJobs=[], pmJobs=[];
+  jobs.forEach(function(j){
+    initServiceAssignments(j);
+    var mine=SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===inspId;});
+    if(!mine) return;
+    if(j.window==='AM') amJobs.push(j);
+    else pmJobs.push(j);
   });
 
-  return clusters;
+  var total=0;
+
+  // AM: home → jobs → home/office
+  if(amJobs.length){
+    // Sort by nearest-neighbor for a realistic drive estimate
+    var amRoute=nearestNeighborRoute(insp, amJobs);
+    total+=driveMins(hav(insp, amRoute[0]));
+    for(var i=1;i<amRoute.length;i++) total+=driveMins(hav(amRoute[i-1], amRoute[i]));
+    var lastAM=amRoute[amRoute.length-1];
+    if(pmJobs.length && office){
+      total+=Math.min(driveMins(hav(lastAM,insp)), driveMins(hav(lastAM,office)));
+    } else {
+      total+=driveMins(hav(lastAM, insp));
+    }
+    amJobs.forEach(function(j){ total+=jobSvcMinsForInsp(j, inspId); });
+  }
+
+  // PM: home/office → jobs → home
+  if(pmJobs.length){
+    var pmRoute=nearestNeighborRoute(insp, pmJobs);
+    var pmStart=(amJobs.length && office) ? office : insp;
+    total+=driveMins(hav(pmStart, pmRoute[0]));
+    for(var i=1;i<pmRoute.length;i++) total+=driveMins(hav(pmRoute[i-1], pmRoute[i]));
+    total+=driveMins(hav(pmRoute[pmRoute.length-1], insp));
+    pmJobs.forEach(function(j){ total+=jobSvcMinsForInsp(j, inspId); });
+  }
+
+  return total;
 }
 
-// Assign clusters to inspectors based on proximity + workload balance
-function assignClustersToInspectors(clusters, window){
-  var clusterAssignments={}; // clusterIndex -> inspectorId
-  var assignedClusters=new Set();
+// Service minutes for only the services assigned to a specific inspector on a job
+function jobSvcMinsForInsp(job, inspId){
+  var svcMins=0;
+  var hasRadonOrMold=false;
+  SVC.forEach(function(s){
+    if(!job[s] || job.serviceAssignments[s]!==inspId) return;
+    if(s==='gas') svcMins+=(job.proptype==='duplex'||job.proptype==='multifamily'?75:45);
+    else if(s==='sewer') svcMins+=60;
+    else if(s==='radon'){ hasRadonOrMold=true; svcMins=Math.max(svcMins,10); }
+    else if(s==='mold'){ hasRadonOrMold=true; svcMins=Math.max(svcMins,15); }
+  });
+  return svcMins;
+}
 
-  // First pass: assign clusters to best inspector (closest + balanced workload)
-  clusters.forEach(function(cluster, clusterIdx){
-    var bestInsp=null;
-    var bestDist=Infinity;
-    var bestWorkload=Infinity;
-
-    inspectors.forEach(function(insp){
-      // Skip unavailable inspectors
-      if(insp.unavailable) return;
-
-      // Check if inspector can handle all jobs in this cluster
-      var canHandle=cluster.jobs.every(function(job){
-        return SVC.every(function(s){
-          return !job[s] || insp[s]; // Either service not needed or inspector certified
-        });
-      });
-
-      if(!canHandle) return;
-
-      var dist=calculateDistance(insp.lat, insp.lng, cluster.centerLat, cluster.centerLng);
-
-      // Calculate this cluster's estimated workload
-      var clusterWorkload=0;
-      cluster.jobs.forEach(function(job){
-        clusterWorkload+=jobSvcMins(job, null);
-      });
-
-      // Get inspector's current total workload (AM + PM combined)
-      var amWorkload=calcInspectorWorkload(insp.id, 'AM');
-      var pmWorkload=calcInspectorWorkload(insp.id, 'PM');
-      var totalCurrentWorkload=Math.max(amWorkload, pmWorkload); // Max of AM/PM (limiting window)
-      var projectedWorkload=totalCurrentWorkload+clusterWorkload;
-
-      // Prefer: closer is better, but also consider balance
-      // If within ~10 miles, prefer lighter workload
-      var distanceWeight=dist;
-      var workloadWeight=projectedWorkload;
-      var score=distanceWeight*0.5 + (workloadWeight/60)*0.5; // Blend proximity and workload
-
-      if(dist<Infinity && projectedWorkload<bestWorkload*1.2){ // Within 20% of best workload
-        if(dist<bestDist || projectedWorkload<bestWorkload){
-          bestDist=dist;
-          bestWorkload=projectedWorkload;
-          bestInsp=insp.id;
-        }
-      }
+// Simple nearest-neighbor sort for drive time estimation
+function nearestNeighborRoute(startPt, jobList){
+  if(!jobList.length) return [];
+  var remaining=jobList.slice(), route=[], cur=startPt;
+  while(remaining.length){
+    var best=null, bestD=Infinity;
+    remaining.forEach(function(j){
+      var d=hav(cur,j);
+      if(d<bestD){bestD=d;best=j;}
     });
+    route.push(best);
+    remaining.splice(remaining.indexOf(best),1);
+    cur=best;
+  }
+  return route;
+}
 
-    if(bestInsp){
-      clusterAssignments[clusterIdx]=bestInsp;
-      assignedClusters.add(clusterIdx);
+// ── DRIVE-AWARE GREEDY ASSIGNMENT (no clusters) ────────
+// Find the best inspector for a single service at a job, considering full-day workload
+function findBestInspector(job, service, preferInspId){
+  var available=inspectors.filter(function(i){
+    if(i.unavailable) return false;
+    if(!i[service]) return false;
+    if((job.excludedIds||[]).indexOf(i.id)>=0) return false;
+    return true;
+  });
+  if(!available.length) return null;
+
+  // If a requested inspector can do it, use them
+  var reqIds=job.requestedIds||[];
+  if(reqIds.length){
+    var reqMatch=available.find(function(i){return reqIds.indexOf(i.id)>=0;});
+    if(reqMatch) return reqMatch.id;
+  }
+
+  // If we have a preferred inspector (Gas+Sewer pairing), try them first
+  if(preferInspId){
+    var pref=available.find(function(i){return i.id===preferInspId;});
+    if(pref) return pref.id; // Use preferred — pairing is more important than micro-balance
+  }
+
+  // Otherwise pick inspector with lowest full-day workload, using drive distance as tiebreaker
+  var best=null, bestWorkload=Infinity, bestDist=Infinity;
+  available.forEach(function(insp){
+    var workload=calcFullDayWorkload(insp.id);
+    var dist=hav(insp, job);
+    // Primary: workload. Tiebreak (within 15 min): distance
+    if(workload < bestWorkload - 15 || (workload < bestWorkload + 15 && dist < bestDist)){
+      best=insp.id;
+      bestWorkload=workload;
+      bestDist=dist;
     }
   });
-
-  return {assignments: clusterAssignments, assigned: assignedClusters};
+  return best;
 }
 
-// ── WORKLOAD BALANCING: Intelligently split Gas+Sewer for better balance ──
+// ── WORKLOAD BALANCING: Split Gas+Sewer when full-day gap is too large ──
 function balanceWorkloadWithSplits(){
-  console.log('=== WORKLOAD BALANCING PASS ===');
-  var WORKLOAD_THRESHOLD=45; // Try to keep within 45 minutes
+  console.log('=== WORKLOAD BALANCING PASS (full-day) ===');
+  var WORKLOAD_THRESHOLD=45; // minutes gap allowed between busiest and lightest inspector
   var maxIterations=15;
   var totalMoves=0;
 
   for(var iter=0;iter<maxIterations;iter++){
-    // Calculate current workload for each inspector
-    var workloads=inspectors.map(function(insp){
-      var amMins=calcInspectorWorkload(insp.id,'AM');
-      var pmMins=calcInspectorWorkload(insp.id,'PM');
-      return {inspId:insp.id, name:insp.name, am:amMins, pm:pmMins, max:Math.max(amMins,pmMins)};
+    // Use full-day workload for every inspector
+    var workloads=inspectors.filter(function(i){return !i.unavailable;}).map(function(insp){
+      var fd=calcFullDayWorkload(insp.id);
+      return {inspId:insp.id, name:insp.name, total:fd};
     });
+    if(workloads.length<2) break;
 
-    // Find most overloaded and lightest
-    var overloaded=workloads.reduce(function(prev,curr){return curr.max>prev.max?curr:prev;});
-    var light=workloads.reduce(function(prev,curr){return curr.max<prev.max?curr:prev;});
-    var gap=overloaded.max-light.max;
+    var overloaded=workloads.reduce(function(p,c){return c.total>p.total?c:p;});
+    var light=workloads.reduce(function(p,c){return c.total<p.total?c:p;});
+    var gap=overloaded.total-light.total;
 
-    console.log('Iteration '+iter+': '+overloaded.name+' ~'+fmtMins(overloaded.max)+' vs '+light.name+' ~'+fmtMins(light.max)+' (gap: '+Math.round(gap)+'m)');
+    console.log('Iter '+iter+': '+overloaded.name+' '+fmtMins(overloaded.total)+' vs '+light.name+' '+fmtMins(light.total)+' (gap: '+Math.round(gap)+'m)');
 
-    if(gap<=WORKLOAD_THRESHOLD) break; // Balanced enough
+    if(gap<=WORKLOAD_THRESHOLD) break;
 
     var moved=false;
+    var lightInsp=inspectors.find(function(i){return i.id===light.inspId;});
 
-    // Find Gas+Sewer pairs assigned to overloaded inspector and try to split
+    // Find a Gas+Sewer pair on overloaded inspector and split the better one
     jobs.forEach(function(job){
       if(moved) return;
-
       initServiceAssignments(job);
       var hasGas=job.gas&&job.serviceAssignments.gas===overloaded.inspId;
       var hasSewer=job.sewer&&job.serviceAssignments.sewer===overloaded.inspId;
-
-      // Only consider splitting if BOTH services are at this location and assigned to overloaded
       if(!hasGas||!hasSewer) return;
 
       var lightInsp=inspectors.find(function(i){return i.id===light.inspId;});
@@ -1373,60 +1391,57 @@ function balanceWorkloadWithSplits(){
       var currentGap=overloaded.max-light.max;
       var sewerGapAfterMove=Infinity, gasGapAfterMove=Infinity;
 
-      if(lightInsp.sewer){
-        var newOverloaded=overloaded.max-sewerMins;
-        var newLight=light.max+sewerMins;
-        sewerGapAfterMove=Math.abs(newOverloaded-newLight);
+      // Simulate moving sewer to light inspector and measure new gap
+      var sewerGapAfterMove=Infinity, gasGapAfterMove=Infinity;
+      if(lightInsp && lightInsp.sewer){
+        job.serviceAssignments.sewer=light.inspId;
+        var newOver=calcFullDayWorkload(overloaded.inspId);
+        var newLight=calcFullDayWorkload(light.inspId);
+        sewerGapAfterMove=Math.abs(newOver-newLight);
+        job.serviceAssignments.sewer=overloaded.inspId; // revert
+      }
+      if(lightInsp && lightInsp.gas){
+        job.serviceAssignments.gas=light.inspId;
+        var newOver=calcFullDayWorkload(overloaded.inspId);
+        var newLight=calcFullDayWorkload(light.inspId);
+        gasGapAfterMove=Math.abs(newOver-newLight);
+        job.serviceAssignments.gas=overloaded.inspId; // revert
       }
 
-      if(lightInsp.gas){
-        var newOverloaded=overloaded.max-gasMins;
-        var newLight=light.max+gasMins;
-        gasGapAfterMove=Math.abs(newOverloaded-newLight);
-      }
-
-      // Pick the move that reduces gap more
-      if(sewerGapAfterMove<gasGapAfterMove){
-        moveService='sewer';
-        reason='Move Sewer (60m) for better balance';
-      }else if(gasGapAfterMove<Infinity){
-        moveService='gas';
-        reason='Move Gas (45m) for better balance';
+      var moveService=null, reason='';
+      if(sewerGapAfterMove<gasGapAfterMove && sewerGapAfterMove<gap){
+        moveService='sewer'; reason='Move Sewer for better full-day balance';
+      } else if(gasGapAfterMove<Infinity && gasGapAfterMove<gap){
+        moveService='gas'; reason='Move Gas for better full-day balance';
       }
 
       if(moveService){
         job.serviceAssignments[moveService]=light.inspId;
         var otherService=moveService==='sewer'?'gas':'sewer';
         decisionLog.push({
-          address:job.display,
-          window:job.window,
+          address:job.display, window:job.window,
           decisions:[
-            {service:moveService.charAt(0).toUpperCase()+moveService.slice(1),inspector:light.name,reason:reason},
-            {service:otherService.charAt(0).toUpperCase()+otherService.slice(1),inspector:overloaded.name,reason:'Keep on current assignment'}
+            {service:moveService.charAt(0).toUpperCase()+moveService.slice(1), inspector:light.name, reason:reason},
+            {service:otherService.charAt(0).toUpperCase()+otherService.slice(1), inspector:overloaded.name, reason:'Keep on current inspector'}
           ],
           notes:['⚖️ Split for balance: '+moveService.toUpperCase()+' moved from '+overloaded.name+' to '+light.name]
         });
-        moved=true;
-        totalMoves++;
+        moved=true; totalMoves++;
         console.log('  Split '+job.display+': '+moveService.toUpperCase()+' → '+light.name);
-        return;
       }
     });
 
-    if(!moved){
-      console.log('  No more beneficial splits possible');
-      break; // No more possible splits
-    }
+    if(!moved){ console.log('  No more beneficial splits possible'); break; }
   }
 
-  console.log('=== WORKLOAD BALANCING COMPLETE: '+totalMoves+' split(s) made ===');
+  console.log('=== BALANCING COMPLETE: '+totalMoves+' split(s) ===');
 }
 
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
 
-  console.log('=== NEW GEOGRAPHIC ASSIGNMENT STARTING ===');
+  console.log('=== DRIVE-AWARE FULL-DAY ASSIGNMENT STARTING ===');
   decisionLog=[];
 
   // Reset all assignments
@@ -1435,108 +1450,130 @@ function runAssignment(){
     SVC.forEach(function(s){j.serviceAssignments[s]=null;});
   });
 
-  // Process each time window separately (AM and PM have independent territories)
-  ['AM','PM'].forEach(function(win){
-    var jobsInWindow=jobs.filter(function(j){return j.window===win;});
-    if(!jobsInWindow.length) return;
-
-    console.log('Processing '+win+' window with '+jobsInWindow.length+' jobs');
-
-    // Step 1: Create geographic clusters of nearby jobs
-    var clusters=createJobClusters(jobsInWindow);
-    console.log(win+': Created '+clusters.length+' geographic clusters');
-
-    // Step 2: Assign clusters to inspectors (considering both proximity and workload balance)
-    var clusterAssign=assignClustersToInspectors(clusters, win);
-    var clusterAssignments=clusterAssign.assignments;
-
-    // Step 3: Within each cluster, assign all services at same location to same inspector
-    clusters.forEach(function(cluster, clusterIdx){
-      var inspectorId=clusterAssignments[clusterIdx];
-      if(!inspectorId) return; // Unassigned cluster
-
-      var insp=inspectors.find(function(i){return i.id===inspectorId;});
-      console.log(win+' Cluster '+clusterIdx+': Assigned to '+insp.name+' ('+cluster.jobs.length+' job(s))');
-
-      // Group jobs by ADDRESS (not by job ID) so same addresses stay together
-      var locationGroups={};
-      cluster.jobs.forEach(function(job){
-        var addrKey=job.display||job.addr; // Use display address as key
-        if(!locationGroups[addrKey]) locationGroups[addrKey]={jobs:[], lat:job.lat, lng:job.lng};
-        locationGroups[addrKey].jobs.push(job);
-      });
-
-      // Assign all services at each location to the same inspector
-      Object.keys(locationGroups).forEach(function(locKey){
-        var locGroup=locationGroups[locKey];
-
-        // Merge all services from all jobs at this address
-        var mergedServices={gas:false, sewer:false, radon:false, mold:false};
-        locGroup.jobs.forEach(function(job){
-          if(job.gas) mergedServices.gas=true;
-          if(job.sewer) mergedServices.sewer=true;
-          if(job.radon) mergedServices.radon=true;
-          if(job.mold) mergedServices.mold=true;
-        });
-
-        var jobReasoning={address:locGroup.jobs[0].display, window:win, decisions:[], notes:[]};
-
-        // Check for requests/exclusions (from first job at this address)
-        var firstJob=locGroup.jobs[0];
-        var reqIds=firstJob.requestedIds||[];
-        var excIds=firstJob.excludedIds||[];
-
-        if(reqIds.length){
-          var reqNames=reqIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
-          jobReasoning.notes.push('🎯 Requested: '+reqNames.join(', '));
-        }
-        if(excIds.length){
-          var excNames=excIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
-          jobReasoning.notes.push('⛔ Excluded: '+excNames.join(', '));
-        }
-
-        // Assign all merged services to the cluster's inspector on ALL jobs at this address
-        SVC.forEach(function(s){
-          if(mergedServices[s]){
-            jobReasoning.decisions.push({service:s.charAt(0).toUpperCase()+s.slice(1), inspector:insp.name, reason:'Geographic cluster assignment'});
-          }
-        });
-
-        // Apply assignments to all job objects at this address
-        locGroup.jobs.forEach(function(job){
-          initServiceAssignments(job);
-          SVC.forEach(function(s){
-            if(mergedServices[s]){
-              job.serviceAssignments[s]=inspectorId;
-            }
-          });
-        });
-
-        if(jobReasoning.decisions.length) decisionLog.push(jobReasoning);
-      });
-    });
+  // Sort jobs: Gas+Sewer combo jobs first (heaviest, most constrained), then single-service
+  // Within each group, sort by total service minutes descending so big jobs get first pick
+  var sortedJobs=jobs.slice().sort(function(a,b){
+    var aGS=(a.gas&&a.sewer)?1:0, bGS=(b.gas&&b.sewer)?1:0;
+    if(aGS!==bGS) return bGS-aGS; // Gas+Sewer combos first
+    return jobSvcMins(b,null)-jobSvcMins(a,null); // Heavier jobs first
   });
 
-  console.log('=== GEOGRAPHIC ASSIGNMENT COMPLETE ===');
+  sortedJobs.forEach(function(job){
+    initServiceAssignments(job);
+    var reqIds=job.requestedIds||[];
+    var excIds=job.excludedIds||[];
 
-  // Post-process: Balance workload by intelligently splitting Gas+Sewer
+    // Group services: handle Gas+Sewer pairing, then Radon/Mold independently
+    var hasGas=job.gas, hasSewer=job.sewer, hasRadon=job.radon, hasMold=job.mold;
+
+    var jobReasoning={address:job.display, window:job.window, decisions:[], notes:[]};
+    if(reqIds.length){
+      var reqNames=reqIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'?';});
+      jobReasoning.notes.push('🎯 Requested: '+reqNames.join(', '));
+    }
+    if(excIds.length){
+      var excNames=excIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'?';});
+      jobReasoning.notes.push('⛔ Excluded: '+excNames.join(', '));
+    }
+
+    // ── Gas + Sewer: try to keep together ──
+    if(hasGas && hasSewer){
+      // Find best inspector who can do BOTH
+      var dualAvail=inspectors.filter(function(i){
+        return !i.unavailable && i.gas && i.sewer && excIds.indexOf(i.id)<0;
+      });
+      var dualBest=null;
+      if(reqIds.length){
+        dualBest=dualAvail.find(function(i){return reqIds.indexOf(i.id)>=0;})||null;
+        if(dualBest) dualBest=dualBest.id;
+      }
+      if(!dualBest && dualAvail.length){
+        var bestWL=Infinity, bestDist=Infinity;
+        dualAvail.forEach(function(insp){
+          var wl=calcFullDayWorkload(insp.id);
+          var dist=hav(insp,job);
+          if(wl < bestWL-15 || (wl < bestWL+15 && dist < bestDist)){
+            dualBest=insp.id; bestWL=wl; bestDist=dist;
+          }
+        });
+      }
+      if(dualBest){
+        // Keep together on the dual-certified inspector
+        job.serviceAssignments.gas=dualBest;
+        job.serviceAssignments.sewer=dualBest;
+        var dn=inspectors.find(function(i){return i.id===dualBest;});
+        jobReasoning.decisions.push({service:'Gas+Sewer', inspector:dn.name, reason:'Kept together — full-day workload balance'});
+        console.log(job.window+' '+job.display+': Gas+Sewer together → '+dn.name);
+      } else {
+        // No dual-certified available — assign each independently
+        var gInsp=findBestInspector(job,'gas',null);
+        var sInsp=findBestInspector(job,'sewer',null);
+        if(gInsp){
+          job.serviceAssignments.gas=gInsp;
+          var gi=inspectors.find(function(i){return i.id===gInsp;});
+          jobReasoning.decisions.push({service:'Gas', inspector:gi.name, reason:'No dual-certified available, assigned independently'});
+        }
+        if(sInsp){
+          job.serviceAssignments.sewer=sInsp;
+          var si=inspectors.find(function(i){return i.id===sInsp;});
+          jobReasoning.decisions.push({service:'Sewer', inspector:si.name, reason:'No dual-certified available, assigned independently'});
+        }
+        jobReasoning.notes.push('⚠️ No single inspector certified for both Gas+Sewer');
+      }
+    } else {
+      // Gas only
+      if(hasGas){
+        var gi=findBestInspector(job,'gas',null);
+        if(gi){
+          job.serviceAssignments.gas=gi;
+          var gn=inspectors.find(function(i){return i.id===gi;});
+          jobReasoning.decisions.push({service:'Gas', inspector:gn.name, reason:'Full-day workload balance'});
+        }
+      }
+      // Sewer only
+      if(hasSewer){
+        var si=findBestInspector(job,'sewer',null);
+        if(si){
+          job.serviceAssignments.sewer=si;
+          var sn=inspectors.find(function(i){return i.id===si;});
+          jobReasoning.decisions.push({service:'Sewer', inspector:sn.name, reason:'Full-day workload balance'});
+        }
+      }
+    }
+
+    // ── Radon / Mold: assign independently (they run concurrent at same job) ──
+    if(hasRadon || hasMold){
+      // Prefer same inspector for both, and same as gas inspector if possible
+      var rmPref=job.serviceAssignments.gas||job.serviceAssignments.sewer||null;
+      var rmInsp=findBestInspector(job, hasRadon?'radon':'mold', rmPref);
+      if(hasRadon && rmInsp) job.serviceAssignments.radon=rmInsp;
+      if(hasMold && rmInsp) job.serviceAssignments.mold=rmInsp;
+      if(rmInsp){
+        var rn=inspectors.find(function(i){return i.id===rmInsp;});
+        jobReasoning.decisions.push({service:(hasRadon&&hasMold)?'Radon+Mold':hasRadon?'Radon':'Mold', inspector:rn.name, reason:'Full-day workload balance'});
+      }
+    }
+
+    if(jobReasoning.decisions.length) decisionLog.push(jobReasoning);
+  });
+
+  console.log('=== INITIAL ASSIGNMENT COMPLETE — RUNNING BALANCE PASS ===');
+
+  // Balance pass: split Gas+Sewer if full-day gap is too large
   balanceWorkloadWithSplits();
 
   save(); renderAll(); switchTab('results'); buildExport();
 
-  // Count assigned services
   var assignedCount=0;
   jobs.forEach(function(j){
     initServiceAssignments(j);
     SVC.forEach(function(s){if(j[s]&&j.serviceAssignments[s]) assignedCount++;});
   });
-
   var activeInspCount=0;
   inspectors.forEach(function(i){if(touchCount(i)>0) activeInspCount++;});
 
-  setStatus('Assigned '+assignedCount+' service(s) across '+activeInspCount+' inspector(s) using geographic clustering.');
+  setStatus('Assigned '+assignedCount+' service(s) across '+activeInspCount+' inspector(s) — full-day balanced.');
 
-  // Refine drive times with actual road distances (async)
   setTimeout(refineDriveTimesRateLimited, 500);
 }
 
