@@ -278,7 +278,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
       <div style="font-size:12px;color:#555;line-height:1.8;">
         <div style="margin-bottom:12px">
           <div style="font-weight:600;color:#111;margin-bottom:2px">v18 — Full-day drive-aware assignment (current)</div>
-          <div style="color:#888">Replaced geographic clustering with a smarter per-job greedy algorithm. Assignment now uses full-day workload (AM + PM combined, including estimated drive time at 45 mph) as the primary cost function — eliminating the problem where one window was overloaded while another was empty. Gas+Sewer jobs are assigned to the best dual-certified inspector available, with a balance-triggered split pass as a fallback. Jobs are sorted heaviest-first so constrained jobs get first pick of inspectors. Balance pass now simulates actual workload change before committing any split, using full-day totals instead of per-window max.</div>
+          <div style="color:#888">Replaced geographic clustering with a smarter per-job greedy algorithm. Assignment now uses full-day workload (AM + PM combined, including estimated drive time at 45 mph) as the primary cost function — eliminating the problem where one window was overloaded while another was empty. Gas+Sewer jobs are assigned to the best dual-certified inspector available, with a balance-triggered split pass as a fallback. Jobs are sorted heaviest-first so constrained jobs get first pick of inspectors. Balance pass now simulates actual workload change before committing any split, using full-day totals instead of per-window max. Fixed inspector scoring to blend workload + drive-to-job cost so nearby inspectors are preferred when workloads are close. Fixed export and assignment panel time labels to include drive time, not just service minutes.</div>
         </div>
         <div style="margin-bottom:12px">
           <div style="font-weight:600;color:#111;margin-bottom:2px">v17 — Enhanced security & API rate limiting</div>
@@ -1330,16 +1330,19 @@ function findBestInspector(job, service, preferInspId){
     if(pref) return pref.id; // Use preferred — pairing is more important than micro-balance
   }
 
-  // Otherwise pick inspector with lowest full-day workload, using drive distance as tiebreaker
-  var best=null, bestWorkload=Infinity, bestDist=Infinity;
+  // Score each inspector: blend full-day workload + estimated drive to this job
+  // Drive time to job is added as a proxy for "how much does this job cost this inspector"
+  // Tiebreaker window is 45 min — within that, closer inspector wins
+  var best=null, bestScore=Infinity;
   available.forEach(function(insp){
     var workload=calcFullDayWorkload(insp.id);
-    var dist=hav(insp, job);
-    // Primary: workload. Tiebreak (within 15 min): distance
-    if(workload < bestWorkload - 15 || (workload < bestWorkload + 15 && dist < bestDist)){
+    var driveToJob=driveMins(hav(insp, job)); // rough cost of getting to this job
+    // Score = current workload + what this job adds in drive. Lower = better.
+    // Weight workload heavily so balance is primary, proximity secondary.
+    var score=workload + driveToJob * 0.5;
+    if(score < bestScore){
+      bestScore=score;
       best=insp.id;
-      bestWorkload=workload;
-      bestDist=dist;
     }
   });
   return best;
@@ -1450,12 +1453,18 @@ function runAssignment(){
     SVC.forEach(function(s){j.serviceAssignments[s]=null;});
   });
 
-  // Sort jobs: Gas+Sewer combo jobs first (heaviest, most constrained), then single-service
-  // Within each group, sort by total service minutes descending so big jobs get first pick
+  // Sort jobs for assignment:
+  // 1. Gas+Sewer combos first — most constrained, need dual-certified inspector
+  // 2. Within combos: heaviest first
+  // 3. Single-service jobs: LIGHTEST first so they spread across inspectors before heavy jobs pile up
+  //    This means Radon (10m) gets assigned before Sewer (60m), so when the sewer jobs come
+  //    around the algorithm sees a realistic picture of each inspector's load and spreads them evenly
   var sortedJobs=jobs.slice().sort(function(a,b){
     var aGS=(a.gas&&a.sewer)?1:0, bGS=(b.gas&&b.sewer)?1:0;
-    if(aGS!==bGS) return bGS-aGS; // Gas+Sewer combos first
-    return jobSvcMins(b,null)-jobSvcMins(a,null); // Heavier jobs first
+    if(aGS!==bGS) return bGS-aGS; // Gas+Sewer combos always first
+    var aMins=jobSvcMins(a,null), bMins=jobSvcMins(b,null);
+    if(aGS && bGS) return bMins-aMins; // Among combos: heaviest first
+    return aMins-bMins; // Among single-service: lightest first so load spreads naturally
   });
 
   sortedJobs.forEach(function(job){
@@ -1741,10 +1750,26 @@ function renderResults(){
       var route=calculateOptimalRoute(insp.id, win);
       if(!route.length) return;
 
-      var amMins=calcInspectorWorkload(insp.id,'AM');
-      var pmMins=calcInspectorWorkload(insp.id,'PM');
-      var estMins=win==='AM'?amMins:pmMins;
-      var estLabel=estMins?'<span class="insp-total">~'+fmtMins(estMins)+'</span>':'';
+      // Calculate window time including drive
+      var winTimeMins=0;
+      var cur=insp;
+      route.forEach(function(j){
+        winTimeMins+=driveMins(hav(cur,j));
+        winTimeMins+=jobSvcMinsForInsp(j,insp.id);
+        cur=j;
+      });
+      var pmJobsForInsp=jobs.filter(function(j){
+        if(j.window!=='PM') return false;
+        initServiceAssignments(j);
+        return SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===insp.id;});
+      });
+      var lastJ=route[route.length-1];
+      if(win==='AM' && pmJobsForInsp.length && office){
+        winTimeMins+=Math.min(driveMins(hav(lastJ,insp)), driveMins(hav(lastJ,office)));
+      } else {
+        winTimeMins+=driveMins(hav(lastJ,insp));
+      }
+      var estLabel=winTimeMins?'<span class="insp-total">~'+fmtMins(winTimeMins)+'</span>':'';
 
       html+='<div style="margin-bottom:16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">'
         +'<div style="width:8px;height:8px;border-radius:50%;background:'+insp.color+';flex-shrink:0"></div>'
@@ -1830,8 +1855,29 @@ function buildExport(){
       var route=calculateOptimalRoute(insp.id,win);
       if(!route.length) return;
 
-      var estMins=calcInspectorWorkload(insp.id,win);
-      out+='\n'+escapeHtml(insp.name)+(insp.unavailable?' [UNAVAILABLE]':'')+(estMins?' (~'+fmtMins(estMins)+')'  :'')+'\n';
+      // Calculate window time = drive from home to first job + between jobs + back + service time
+      var winTimeMins=0;
+      if(route.length){
+        var cur=insp;
+        route.forEach(function(j){
+          winTimeMins+=driveMins(hav(cur,j));
+          winTimeMins+=jobSvcMinsForInsp(j,insp.id);
+          cur=j;
+        });
+        // Return leg: if AM and has PM jobs and office set, go to closer of home/office; else home
+        var pmJobs=jobs.filter(function(j){
+          if(j.window!=='PM') return false;
+          initServiceAssignments(j);
+          return SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===insp.id;});
+        });
+        var lastJob=route[route.length-1];
+        if(win==='AM' && pmJobs.length && office){
+          winTimeMins+=Math.min(driveMins(hav(lastJob,insp)), driveMins(hav(lastJob,office)));
+        } else {
+          winTimeMins+=driveMins(hav(lastJob,insp));
+        }
+      }
+      out+='\n'+escapeHtml(insp.name)+(insp.unavailable?' [UNAVAILABLE]':'')+(winTimeMins?' (~'+fmtMins(winTimeMins)+')'  :'')+'\n';
 
       route.forEach(function(j, idx){
         var svcs=SVC.filter(function(s){return j[s]&&j.serviceAssignments[s]===insp.id;}).map(function(s){return s.toUpperCase();}).join('+');
