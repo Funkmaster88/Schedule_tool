@@ -743,18 +743,33 @@ function buildRouteDisplay(inspId, window){
   var current=insp;
   lines.push('<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px;font-weight:600">📍 '+escapeHtml(insp.name)+' <span style="color:#aaa;font-weight:400;font-size:10px">(home)</span></div>');
 
-  // Route steps
+  // Route steps (with service times)
+  var totalServiceMins=0;
+  var totalDriveMins=0;
   route.forEach(function(job, idx){
     var d=hav(current, job);
-    var mins=driveMins(d);
+    var driveMins_=driveMins(d);
+    totalDriveMins+=driveMins_;
+
     var svcs=SVC.filter(function(s){
       return job[s] && getServiceAssignedTo(job, s)===inspId;
     }).map(function(s){return s.toUpperCase();}).join('+');
 
+    // Calculate service time for this job (only the services assigned to this inspector)
+    var svcMins=0;
+    SVC.forEach(function(s){
+      if(job[s] && getServiceAssignedTo(job, s)===inspId){
+        if(s==='gas') svcMins+=(job.proptype==='duplex'||job.proptype==='multifamily'?75:45);
+        else if(s==='sewer') svcMins+=60;
+        else if(s==='radon'||s==='mold') svcMins=Math.max(svcMins, s==='radon'?10:15);
+      }
+    });
+    totalServiceMins+=svcMins;
+
     lines.push('<div style="display:flex;gap:6px;align-items:center;margin-left:12px;margin-bottom:2px">');
-    lines.push('<span style="color:#aaa;font-size:10px">↓ '+mins+'m</span>');
+    lines.push('<span style="color:#aaa;font-size:10px">↓ '+driveMins_+'m</span>');
     lines.push('<span style="font-weight:500">'+escapeHtml(job.display)+'</span>');
-    if(svcs) lines.push('<span style="font-size:9px;color:#666">['+svcs+']</span>');
+    if(svcs) lines.push('<span style="font-size:9px;color:#999">['+svcs+' · '+svcMins+'m]</span>');
     lines.push('</div>');
 
     current=job;
@@ -762,14 +777,18 @@ function buildRouteDisplay(inspId, window){
 
   // End point
   var endDist=hav(current, insp);
-  var endMins=driveMins(endDist);
+  var endMins_=driveMins(endDist);
+  totalDriveMins+=endMins_;
   var endPoint=office && jobs.some(function(j){return j.window===window&&j.window!=='AM'?'PM':'AM';})?office:insp;
   var endLabel=office && endPoint.id?'office':insp.name;
 
+  var totalMins=totalDriveMins+totalServiceMins;
+
   lines.push('<div style="display:flex;gap:4px;align-items:center;margin-left:12px;margin-top:4px;font-weight:600">');
-  lines.push('<span style="color:#aaa;font-size:10px">↓ '+endMins+'m</span>');
+  lines.push('<span style="color:#aaa;font-size:10px">↓ '+endMins_+'m</span>');
   lines.push('<span>📍 '+escapeHtml(endLabel)+'</span>');
   lines.push('</div>');
+  lines.push('<div style="margin-top:6px;padding-top:6px;border-top:1px solid #ddd;font-size:11px;color:#333;font-weight:600">Total: '+fmtMins(totalMins)+' ('+fmtMins(totalDriveMins)+' drive + '+fmtMins(totalServiceMins)+' service)</div>');
 
   lines.push('</div>');
   return lines.join('');
