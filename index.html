@@ -1243,17 +1243,21 @@ function createJobClusters(jobList){
   return clusters;
 }
 
-// Assign clusters to inspectors based on home location proximity
-function assignClustersToInspectors(clusters){
+// Assign clusters to inspectors based on proximity + workload balance
+function assignClustersToInspectors(clusters, window){
   var clusterAssignments={}; // clusterIndex -> inspectorId
   var assignedClusters=new Set();
 
-  // First pass: assign clusters to closest inspector (respecting certifications)
+  // First pass: assign clusters to best inspector (closest + balanced workload)
   clusters.forEach(function(cluster, clusterIdx){
     var bestInsp=null;
     var bestDist=Infinity;
+    var bestWorkload=Infinity;
 
     inspectors.forEach(function(insp){
+      // Skip unavailable inspectors
+      if(insp.unavailable) return;
+
       // Check if inspector can handle all jobs in this cluster
       var canHandle=cluster.jobs.every(function(job){
         return SVC.every(function(s){
@@ -1264,9 +1268,31 @@ function assignClustersToInspectors(clusters){
       if(!canHandle) return;
 
       var dist=calculateDistance(insp.lat, insp.lng, cluster.centerLat, cluster.centerLng);
-      if(dist<bestDist){
-        bestDist=dist;
-        bestInsp=insp.id;
+
+      // Calculate this cluster's estimated workload
+      var clusterWorkload=0;
+      cluster.jobs.forEach(function(job){
+        clusterWorkload+=jobSvcMins(job, null);
+      });
+
+      // Get inspector's current total workload (AM + PM combined)
+      var amWorkload=calcInspectorWorkload(insp.id, 'AM');
+      var pmWorkload=calcInspectorWorkload(insp.id, 'PM');
+      var totalCurrentWorkload=Math.max(amWorkload, pmWorkload); // Max of AM/PM (limiting window)
+      var projectedWorkload=totalCurrentWorkload+clusterWorkload;
+
+      // Prefer: closer is better, but also consider balance
+      // If within ~10 miles, prefer lighter workload
+      var distanceWeight=dist;
+      var workloadWeight=projectedWorkload;
+      var score=distanceWeight*0.5 + (workloadWeight/60)*0.5; // Blend proximity and workload
+
+      if(dist<Infinity && projectedWorkload<bestWorkload*1.2){ // Within 20% of best workload
+        if(dist<bestDist || projectedWorkload<bestWorkload){
+          bestDist=dist;
+          bestWorkload=projectedWorkload;
+          bestInsp=insp.id;
+        }
       }
     });
 
@@ -1303,8 +1329,8 @@ function runAssignment(){
     var clusters=createJobClusters(jobsInWindow);
     console.log(win+': Created '+clusters.length+' geographic clusters');
 
-    // Step 2: Assign clusters to inspectors
-    var clusterAssign=assignClustersToInspectors(clusters);
+    // Step 2: Assign clusters to inspectors (considering both proximity and workload balance)
+    var clusterAssign=assignClustersToInspectors(clusters, win);
     var clusterAssignments=clusterAssign.assignments;
 
     // Step 3: Within each cluster, assign all services at same location to same inspector
