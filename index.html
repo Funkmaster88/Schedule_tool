@@ -1612,6 +1612,7 @@ function importSettings(){
 }
 
 function renderMap(){
+  if(!map){console.log('renderMap: Map not initialized yet');return;}
   layers.forEach(function(l){l.setMap(null);}); layers=[];
   var bounds=new google.maps.LatLngBounds(); var hasBounds=false;
   if(office){
