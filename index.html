@@ -1458,24 +1458,33 @@ function runAssignment(){
       var insp=inspectors.find(function(i){return i.id===inspectorId;});
       console.log(win+' Cluster '+clusterIdx+': Assigned to '+insp.name+' ('+cluster.jobs.length+' job(s))');
 
-      // Group jobs by location (address)
+      // Group jobs by ADDRESS (not by job ID) so same addresses stay together
       var locationGroups={};
       cluster.jobs.forEach(function(job){
-        if(!locationGroups[job.id]) locationGroups[job.id]={jobs:[], lat:job.lat, lng:job.lng};
-        locationGroups[job.id].jobs.push(job);
+        var addrKey=job.display||job.addr; // Use display address as key
+        if(!locationGroups[addrKey]) locationGroups[addrKey]={jobs:[], lat:job.lat, lng:job.lng};
+        locationGroups[addrKey].jobs.push(job);
       });
 
       // Assign all services at each location to the same inspector
       Object.keys(locationGroups).forEach(function(locKey){
         var locGroup=locationGroups[locKey];
-        var job=locGroup.jobs[0]; // All jobs at same location
 
-        initServiceAssignments(job);
-        var jobReasoning={address:job.display, window:win, decisions:[], notes:[]};
+        // Merge all services from all jobs at this address
+        var mergedServices={gas:false, sewer:false, radon:false, mold:false};
+        locGroup.jobs.forEach(function(job){
+          if(job.gas) mergedServices.gas=true;
+          if(job.sewer) mergedServices.sewer=true;
+          if(job.radon) mergedServices.radon=true;
+          if(job.mold) mergedServices.mold=true;
+        });
 
-        // Check for requests/exclusions
-        var reqIds=job.requestedIds||[];
-        var excIds=job.excludedIds||[];
+        var jobReasoning={address:locGroup.jobs[0].display, window:win, decisions:[], notes:[]};
+
+        // Check for requests/exclusions (from first job at this address)
+        var firstJob=locGroup.jobs[0];
+        var reqIds=firstJob.requestedIds||[];
+        var excIds=firstJob.excludedIds||[];
 
         if(reqIds.length){
           var reqNames=reqIds.map(function(id){var i=inspectors.find(function(x){return x.id===id;});return i?i.name:'Unknown';});
@@ -1486,12 +1495,21 @@ function runAssignment(){
           jobReasoning.notes.push('⛔ Excluded: '+excNames.join(', '));
         }
 
-        // Assign all services to the cluster's inspector
+        // Assign all merged services to the cluster's inspector on ALL jobs at this address
         SVC.forEach(function(s){
-          if(job[s]){
-            job.serviceAssignments[s]=inspectorId;
+          if(mergedServices[s]){
             jobReasoning.decisions.push({service:s.charAt(0).toUpperCase()+s.slice(1), inspector:insp.name, reason:'Geographic cluster assignment'});
           }
+        });
+
+        // Apply assignments to all job objects at this address
+        locGroup.jobs.forEach(function(job){
+          initServiceAssignments(job);
+          SVC.forEach(function(s){
+            if(mergedServices[s]){
+              job.serviceAssignments[s]=inspectorId;
+            }
+          });
         });
 
         if(jobReasoning.decisions.length) decisionLog.push(jobReasoning);
