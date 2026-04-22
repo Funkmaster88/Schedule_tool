@@ -1171,6 +1171,28 @@ function reassignService(jobId, service){
 // ══════════════════════════════════════════════════════
 var decisionLog=[]; // Track assignment reasoning
 
+// ── Assignment helper functions ───────────────────────
+// Calculate current workload for an inspector (in minutes)
+function calcInspectorWorkload(inspId, window){
+  var winJobs=jobs.filter(function(j){
+    if(j.window!==window) return false;
+    initServiceAssignments(j);
+    return SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===inspId;});
+  });
+  return winJobs.reduce(function(total, j){
+    var svcMins=0;
+    SVC.forEach(function(s){
+      if(j[s] && j.serviceAssignments[s]===inspId){
+        if(s==='gas' && (j.proptype==='duplex'||j.proptype==='multifamily')) svcMins+=SVC_MINS.gas+30;
+        else if(s==='sewer') svcMins+=SVC_MINS.sewer;
+        else if(s==='radon'||s==='mold') svcMins=Math.max(svcMins, s==='radon'?SVC_MINS.radon:SVC_MINS.mold);
+        else svcMins+=SVC_MINS[s]||0;
+      }
+    });
+    return total+svcMins;
+  }, 0);
+}
+
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
@@ -1185,27 +1207,6 @@ function runAssignment(){
   // NEW: Track workload per inspector across all services
   var svcAssigned={}; // svcAssigned[inspId] = array of jobs with services assigned
   inspectors.forEach(function(i){svcAssigned[i.id]=[];});
-
-  // NEW: Helper to calculate current workload for an inspector
-  function calcInspectorWorkload(inspId, window){
-    var winJobs=jobs.filter(function(j){
-      if(j.window!==window) return false;
-      initServiceAssignments(j);
-      return SVC.some(function(s){return j[s]&&j.serviceAssignments[s]===inspId;});
-    });
-    return winJobs.reduce(function(total, j){
-      var svcMins=0;
-      SVC.forEach(function(s){
-        if(j[s] && j.serviceAssignments[s]===inspId){
-          if(s==='gas' && (j.proptype==='duplex'||j.proptype==='multifamily')) svcMins+=SVC_MINS.gas+30;
-          else if(s==='sewer') svcMins+=SVC_MINS.sewer;
-          else if(s==='radon'||s==='mold') svcMins=Math.max(svcMins, s==='radon'?SVC_MINS.radon:SVC_MINS.mold);
-          else svcMins+=SVC_MINS[s]||0;
-        }
-      });
-      return total+svcMins;
-    }, 0);
-  }
 
   // Process jobs by window
   ['AM','PM'].forEach(function(win){
