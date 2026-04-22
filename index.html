@@ -1324,6 +1324,91 @@ function assignClustersToInspectors(clusters, window){
   return {assignments: clusterAssignments, assigned: assignedClusters};
 }
 
+// ── WORKLOAD BALANCING: Intelligently split Gas+Sewer for better balance ──
+function balanceWorkloadWithSplits(){
+  console.log('=== WORKLOAD BALANCING PASS ===');
+  var WORKLOAD_THRESHOLD=45; // Try to keep within 45 minutes
+  var maxIterations=15;
+  var totalMoves=0;
+
+  for(var iter=0;iter<maxIterations;iter++){
+    // Calculate current workload for each inspector
+    var workloads=inspectors.map(function(insp){
+      var amMins=calcInspectorWorkload(insp.id,'AM');
+      var pmMins=calcInspectorWorkload(insp.id,'PM');
+      return {inspId:insp.id, name:insp.name, am:amMins, pm:pmMins, max:Math.max(amMins,pmMins)};
+    });
+
+    // Find most overloaded and lightest
+    var overloaded=workloads.reduce(function(prev,curr){return curr.max>prev.max?curr:prev;});
+    var light=workloads.reduce(function(prev,curr){return curr.max<prev.max?curr:prev;});
+    var gap=overloaded.max-light.max;
+
+    console.log('Iteration '+iter+': '+overloaded.name+' ~'+fmtMins(overloaded.max)+' vs '+light.name+' ~'+fmtMins(light.max)+' (gap: '+Math.round(gap)+'m)');
+
+    if(gap<=WORKLOAD_THRESHOLD) break; // Balanced enough
+
+    var moved=false;
+
+    // Find Gas+Sewer pairs assigned to overloaded inspector and try to split
+    jobs.forEach(function(job){
+      if(moved) return;
+
+      initServiceAssignments(job);
+      var hasGas=job.gas&&job.serviceAssignments.gas===overloaded.inspId;
+      var hasSewer=job.sewer&&job.serviceAssignments.sewer===overloaded.inspId;
+
+      // Only consider splitting if BOTH services are at this location and assigned to overloaded
+      if(!hasGas||!hasSewer) return;
+
+      var lightInsp=inspectors.find(function(i){return i.id===light.inspId;});
+
+      // Option 1: Light inspector can do Sewer, overloaded can keep Gas
+      if(lightInsp.sewer && !lightInsp.gas){
+        job.serviceAssignments.sewer=light.inspId;
+        decisionLog.push({
+          address:job.display,
+          window:job.window,
+          decisions:[
+            {service:'Gas',inspector:overloaded.name,reason:'Keep with overloaded (lighter service)'},
+            {service:'Sewer',inspector:light.name,reason:'Move to light-loaded (qualified & lighter overall)'}
+          ],
+          notes:['⚖️ Split for balance: Sewer moved from '+overloaded.name+' to '+light.name]
+        });
+        moved=true;
+        totalMoves++;
+        console.log('  Split '+job.display+': Sewer → '+light.name);
+        return;
+      }
+
+      // Option 2: Light inspector can do Gas, overloaded can keep Sewer
+      if(lightInsp.gas && !lightInsp.sewer){
+        job.serviceAssignments.gas=light.inspId;
+        decisionLog.push({
+          address:job.display,
+          window:job.window,
+          decisions:[
+            {service:'Gas',inspector:light.name,reason:'Move to light-loaded (qualified & lighter overall)'},
+            {service:'Sewer',inspector:overloaded.name,reason:'Keep with overloaded (lighter service)'}
+          ],
+          notes:['⚖️ Split for balance: Gas moved from '+overloaded.name+' to '+light.name]
+        });
+        moved=true;
+        totalMoves++;
+        console.log('  Split '+job.display+': Gas → '+light.name);
+        return;
+      }
+    });
+
+    if(!moved){
+      console.log('  No more beneficial splits possible');
+      break; // No more possible splits
+    }
+  }
+
+  console.log('=== WORKLOAD BALANCING COMPLETE: '+totalMoves+' split(s) made ===');
+}
+
 function runAssignment(){
   if(!inspectors.length){setStatus('Add inspectors first.');switchTab('inspectors');return;}
   if(!jobs.length){setStatus('Add jobs first.');switchTab('jobs');return;}
@@ -1402,6 +1487,10 @@ function runAssignment(){
   });
 
   console.log('=== GEOGRAPHIC ASSIGNMENT COMPLETE ===');
+
+  // Post-process: Balance workload by intelligently splitting Gas+Sewer
+  balanceWorkloadWithSplits();
+
   save(); renderAll(); switchTab('results'); buildExport();
 
   // Count assigned services
