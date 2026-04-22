@@ -1308,6 +1308,7 @@ function nearestNeighborRoute(startPt, jobList){
 
 // ── DRIVE-AWARE GREEDY ASSIGNMENT (no clusters) ────────
 // Find the best inspector for a single service at a job, considering full-day workload
+// Find best inspector for a service, returning {id, reason} so we can log real reasoning
 function findBestInspector(job, service, preferInspId){
   var available=inspectors.filter(function(i){
     if(i.unavailable) return false;
@@ -1317,35 +1318,41 @@ function findBestInspector(job, service, preferInspId){
   });
   if(!available.length) return null;
 
-  // If a requested inspector can do it, use them
+  // Requested inspector override
   var reqIds=job.requestedIds||[];
   if(reqIds.length){
     var reqMatch=available.find(function(i){return reqIds.indexOf(i.id)>=0;});
-    if(reqMatch) return reqMatch.id;
+    if(reqMatch) return {id:reqMatch.id, reason:'Requested by client'};
   }
 
-  // If we have a preferred inspector (Gas+Sewer pairing), try them first
+  // Preferred inspector (Gas+Sewer pairing)
   if(preferInspId){
     var pref=available.find(function(i){return i.id===preferInspId;});
-    if(pref) return pref.id; // Use preferred — pairing is more important than micro-balance
+    if(pref) return {id:pref.id, reason:'Kept with paired service'};
   }
 
-  // Score each inspector: blend full-day workload + estimated drive to this job
-  // Drive time to job is added as a proxy for "how much does this job cost this inspector"
-  // Tiebreaker window is 45 min — within that, closer inspector wins
-  var best=null, bestScore=Infinity;
+  // Score each inspector: full-day workload + 0.5× drive-to-job
+  var best=null, bestScore=Infinity, bestWorkload=0, bestDrive=0;
   available.forEach(function(insp){
     var workload=calcFullDayWorkload(insp.id);
-    var driveToJob=driveMins(hav(insp, job)); // rough cost of getting to this job
-    // Score = current workload + what this job adds in drive. Lower = better.
-    // Weight workload heavily so balance is primary, proximity secondary.
-    var score=workload + driveToJob * 0.5;
+    var drive=driveMins(hav(insp, job));
+    var score=workload + drive * 0.5;
     if(score < bestScore){
-      bestScore=score;
-      best=insp.id;
+      bestScore=score; best=insp.id;
+      bestWorkload=workload; bestDrive=drive;
     }
   });
-  return best;
+
+  // Build a meaningful reason string showing the actual numbers
+  if(!best) return null;
+  var others=available.filter(function(i){return i.id!==best;}).map(function(i){
+    var wl=Math.round(calcFullDayWorkload(i.id));
+    var dr=driveMins(hav(i,job));
+    return escapeHtml(i.name)+' ('+wl+'m load, '+dr+'m drive)';
+  });
+  var reason='Lowest score: '+Math.round(bestWorkload)+'m load + '+bestDrive+'m drive'
+    +(others.length ? ' vs '+others.join(', ') : '');
+  return {id:best, reason:reason};
 }
 
 // ── WORKLOAD BALANCING: Split Gas+Sewer when full-day gap is too large ──
@@ -1453,19 +1460,30 @@ function runAssignment(){
     SVC.forEach(function(s){j.serviceAssignments[s]=null;});
   });
 
-  // Sort jobs for assignment:
-  // 1. Gas+Sewer combos first — most constrained, need dual-certified inspector
-  // 2. Within combos: heaviest first
-  // 3. Single-service jobs: LIGHTEST first so they spread across inspectors before heavy jobs pile up
-  //    This means Radon (10m) gets assigned before Sewer (60m), so when the sewer jobs come
-  //    around the algorithm sees a realistic picture of each inspector's load and spreads them evenly
-  var sortedJobs=jobs.slice().sort(function(a,b){
-    var aGS=(a.gas&&a.sewer)?1:0, bGS=(b.gas&&b.sewer)?1:0;
-    if(aGS!==bGS) return bGS-aGS; // Gas+Sewer combos always first
-    var aMins=jobSvcMins(a,null), bMins=jobSvcMins(b,null);
-    if(aGS && bGS) return bMins-aMins; // Among combos: heaviest first
-    return aMins-bMins; // Among single-service: lightest first so load spreads naturally
-  });
+  // Sort each window's jobs independently: Gas+Sewer combos first (heaviest first),
+  // then single-service lightest first so load spreads naturally within each window.
+  function sortJobsForAssignment(jobList){
+    return jobList.slice().sort(function(a,b){
+      var aGS=(a.gas&&a.sewer)?1:0, bGS=(b.gas&&b.sewer)?1:0;
+      if(aGS!==bGS) return bGS-aGS;
+      var aMins=jobSvcMins(a,null), bMins=jobSvcMins(b,null);
+      if(aGS && bGS) return bMins-aMins;
+      return aMins-bMins;
+    });
+  }
+
+  var amJobs=sortJobsForAssignment(jobs.filter(function(j){return j.window==='AM';}));
+  var pmJobs=sortJobsForAssignment(jobs.filter(function(j){return j.window==='PM';}));
+
+  // Interleave AM and PM: assign one from each window alternately so PM jobs don't
+  // preload inspectors with PM work before AM is distributed (which was causing John
+  // to show a heavy full-day score by the time AM sewers were being assigned)
+  var sortedJobs=[];
+  var maxLen=Math.max(amJobs.length, pmJobs.length);
+  for(var wi=0; wi<maxLen; wi++){
+    if(wi < amJobs.length) sortedJobs.push(amJobs[wi]);
+    if(wi < pmJobs.length) sortedJobs.push(pmJobs[wi]);
+  }
 
   sortedJobs.forEach(function(job){
     initServiceAssignments(job);
@@ -1497,69 +1515,75 @@ function runAssignment(){
         if(dualBest) dualBest=dualBest.id;
       }
       if(!dualBest && dualAvail.length){
-        var bestWL=Infinity, bestDist=Infinity;
+        var bestWL=Infinity, bestDist=Infinity, bestWLval=0, bestDriveVal=0;
         dualAvail.forEach(function(insp){
           var wl=calcFullDayWorkload(insp.id);
           var dist=hav(insp,job);
-          if(wl < bestWL-15 || (wl < bestWL+15 && dist < bestDist)){
-            dualBest=insp.id; bestWL=wl; bestDist=dist;
+          var dr=driveMins(dist);
+          var score=wl+dr*0.5;
+          if(score < bestWL+bestDriveVal*0.5){
+            dualBest=insp.id; bestWL=wl; bestDist=dist; bestWLval=wl; bestDriveVal=dr;
           }
         });
       }
       if(dualBest){
-        // Keep together on the dual-certified inspector
         job.serviceAssignments.gas=dualBest;
         job.serviceAssignments.sewer=dualBest;
         var dn=inspectors.find(function(i){return i.id===dualBest;});
-        jobReasoning.decisions.push({service:'Gas+Sewer', inspector:dn.name, reason:'Kept together — full-day workload balance'});
+        var dnWL=Math.round(calcFullDayWorkload(dualBest)-jobSvcMins(job,null));
+        var dnDrive=driveMins(hav(dn,job));
+        var otherDuals=dualAvail.filter(function(i){return i.id!==dualBest;}).map(function(i){
+          return escapeHtml(i.name)+' ('+Math.round(calcFullDayWorkload(i.id)-jobSvcMins(job,null))+'m load, '+driveMins(hav(i,job))+'m drive)';
+        });
+        var dualReason='Kept together — '+dnWL+'m load, '+dnDrive+'m drive'+(otherDuals.length?' vs '+otherDuals.join(', '):'');
+        jobReasoning.decisions.push({service:'Gas+Sewer', inspector:dn.name, reason:dualReason});
         console.log(job.window+' '+job.display+': Gas+Sewer together → '+dn.name);
       } else {
         // No dual-certified available — assign each independently
-        var gInsp=findBestInspector(job,'gas',null);
-        var sInsp=findBestInspector(job,'sewer',null);
-        if(gInsp){
-          job.serviceAssignments.gas=gInsp;
-          var gi=inspectors.find(function(i){return i.id===gInsp;});
-          jobReasoning.decisions.push({service:'Gas', inspector:gi.name, reason:'No dual-certified available, assigned independently'});
+        var gRes=findBestInspector(job,'gas',null);
+        var sRes=findBestInspector(job,'sewer',null);
+        if(gRes){
+          job.serviceAssignments.gas=gRes.id;
+          var gi=inspectors.find(function(i){return i.id===gRes.id;});
+          jobReasoning.decisions.push({service:'Gas', inspector:gi.name, reason:gRes.reason});
         }
-        if(sInsp){
-          job.serviceAssignments.sewer=sInsp;
-          var si=inspectors.find(function(i){return i.id===sInsp;});
-          jobReasoning.decisions.push({service:'Sewer', inspector:si.name, reason:'No dual-certified available, assigned independently'});
+        if(sRes){
+          job.serviceAssignments.sewer=sRes.id;
+          var si=inspectors.find(function(i){return i.id===sRes.id;});
+          jobReasoning.decisions.push({service:'Sewer', inspector:si.name, reason:sRes.reason});
         }
         jobReasoning.notes.push('⚠️ No single inspector certified for both Gas+Sewer');
       }
     } else {
       // Gas only
       if(hasGas){
-        var gi=findBestInspector(job,'gas',null);
-        if(gi){
-          job.serviceAssignments.gas=gi;
-          var gn=inspectors.find(function(i){return i.id===gi;});
-          jobReasoning.decisions.push({service:'Gas', inspector:gn.name, reason:'Full-day workload balance'});
+        var gRes=findBestInspector(job,'gas',null);
+        if(gRes){
+          job.serviceAssignments.gas=gRes.id;
+          var gn=inspectors.find(function(i){return i.id===gRes.id;});
+          jobReasoning.decisions.push({service:'Gas', inspector:gn.name, reason:gRes.reason});
         }
       }
       // Sewer only
       if(hasSewer){
-        var si=findBestInspector(job,'sewer',null);
-        if(si){
-          job.serviceAssignments.sewer=si;
-          var sn=inspectors.find(function(i){return i.id===si;});
-          jobReasoning.decisions.push({service:'Sewer', inspector:sn.name, reason:'Full-day workload balance'});
+        var sRes=findBestInspector(job,'sewer',null);
+        if(sRes){
+          job.serviceAssignments.sewer=sRes.id;
+          var sn=inspectors.find(function(i){return i.id===sRes.id;});
+          jobReasoning.decisions.push({service:'Sewer', inspector:sn.name, reason:sRes.reason});
         }
       }
     }
 
     // ── Radon / Mold: assign independently (they run concurrent at same job) ──
     if(hasRadon || hasMold){
-      // Prefer same inspector for both, and same as gas inspector if possible
       var rmPref=job.serviceAssignments.gas||job.serviceAssignments.sewer||null;
-      var rmInsp=findBestInspector(job, hasRadon?'radon':'mold', rmPref);
-      if(hasRadon && rmInsp) job.serviceAssignments.radon=rmInsp;
-      if(hasMold && rmInsp) job.serviceAssignments.mold=rmInsp;
-      if(rmInsp){
-        var rn=inspectors.find(function(i){return i.id===rmInsp;});
-        jobReasoning.decisions.push({service:(hasRadon&&hasMold)?'Radon+Mold':hasRadon?'Radon':'Mold', inspector:rn.name, reason:'Full-day workload balance'});
+      var rmRes=findBestInspector(job, hasRadon?'radon':'mold', rmPref);
+      if(hasRadon && rmRes) job.serviceAssignments.radon=rmRes.id;
+      if(hasMold && rmRes) job.serviceAssignments.mold=rmRes.id;
+      if(rmRes){
+        var rn=inspectors.find(function(i){return i.id===rmRes.id;});
+        jobReasoning.decisions.push({service:(hasRadon&&hasMold)?'Radon+Mold':hasRadon?'Radon':'Mold', inspector:rn.name, reason:rmRes.reason});
       }
     }
 
