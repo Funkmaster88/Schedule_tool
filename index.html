@@ -398,10 +398,13 @@ function refineDriveTimesRateLimited(){
 // Load API key from localStorage or show setup modal
 function initApiKey(){
   googleApiKey=localStorage.getItem('google_api_key');
+  console.log('initApiKey: API key from localStorage:', googleApiKey ? 'FOUND ('+googleApiKey.length+' chars)' : 'NOT FOUND');
   if(!googleApiKey){
+    console.log('initApiKey: Showing API key modal');
     document.getElementById('api-key-modal').style.display='flex';
     document.getElementById('api-key-input').focus();
   }else{
+    console.log('initApiKey: API key found, loading Google Maps');
     document.getElementById('api-key-modal').style.display='none';
     loadGoogleMaps();
   }
@@ -426,16 +429,18 @@ function resetApiKey(){
 }
 
 function loadGoogleMaps(){
-  if(!googleApiKey) return;
+  if(!googleApiKey){console.error('loadGoogleMaps: NO API KEY');return;}
+  console.log('loadGoogleMaps: Loading Google Maps script');
   var script=document.createElement('script');
   script.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(googleApiKey)+'&libraries=places,geometry';
   script.async=true;
   script.defer=true;
   script.onload=function(){
-    console.log('Google Maps loaded successfully');
+    console.log('loadGoogleMaps: Google Maps loaded successfully, initializing app');
     initializeApp();
   };
   script.onerror=function(){
+    console.error('loadGoogleMaps: FAILED TO LOAD');
     alert('Failed to load Google Maps. Please check your API key and try refreshing.');
     document.getElementById('api-key-modal').style.display='flex';
   };
@@ -443,8 +448,10 @@ function loadGoogleMaps(){
 }
 
 function initializeApp(){
+  console.log('initializeApp: Starting initialization');
   // Initialize map and other components after Google Maps loads
-  if(map) return; // Already initialized
+  if(map){console.log('initializeApp: Map already initialized');return;} // Already initialized
+  console.log('initializeApp: Creating map');
   map = new google.maps.Map(document.getElementById('map'), {
     center: {lat: STL[0], lng: STL[1]},
     zoom: 11,
@@ -461,11 +468,13 @@ function save(){
     localStorage.setItem('ptp_i', JSON.stringify(inspectors));
     localStorage.setItem('ptp_j', JSON.stringify(jobs));
     localStorage.setItem('ptp_o', JSON.stringify(office));
-  }catch(e){}
+    console.log('save(): Saved to localStorage - inspectors:'+inspectors.length+', jobs:'+jobs.length);
+  }catch(e){console.error('save() ERROR:', e.message);}
 }
 
 // ── Boot ──────────────────────────────────────────────
 window.addEventListener('load', function(){
+  console.log('=== Page loaded, starting boot sequence ===');
   checkHttpsAndWarn();
   initApiKey();
 
@@ -474,12 +483,14 @@ window.addEventListener('load', function(){
 
   try{
     var si=localStorage.getItem('ptp_i'), sj=localStorage.getItem('ptp_j'), so=localStorage.getItem('ptp_o');
+    console.log('Boot: localStorage check - inspectors:'+(si?'YES':'NO')+', jobs:'+(sj?'YES':'NO')+', office:'+(so?'YES':'NO'));
     if(si) inspectors=JSON.parse(si);
     if(sj) jobs=JSON.parse(sj);
     if(so) office=JSON.parse(so);
+    console.log('Boot: Data loaded - inspectors:'+inspectors.length+', jobs:'+jobs.length);
     // Migrate old data format to new service assignments
     if(jobs && jobs.length) jobs.forEach(migrateToServiceAssignments);
-  }catch(e){ inspectors=[]; jobs=[]; office=null; }
+  }catch(e){ console.error('Boot: ERROR loading data:', e.message); inspectors=[]; jobs=[]; office=null; }
 
   SVC.forEach(function(s){
     document.getElementById('f-i-'+s).addEventListener('change',function(){ document.getElementById('pi-'+s).className='pill'+(this.checked?' '+SVC_CLS[s]:''); });
@@ -500,13 +511,23 @@ window.addEventListener('load', function(){
   document.getElementById('import-btn').addEventListener('click', importSchedule);
 
   // Initialize Google Places Autocomplete
+  console.log('initializeApp: Setting up Places Autocomplete');
   var autocompleteOptions={types:['geocode'],componentRestrictions:{country:'us'}};
-  new google.maps.places.Autocomplete(document.getElementById('f-office-addr'),autocompleteOptions);
+  try{
+    new google.maps.places.Autocomplete(document.getElementById('f-office-addr'),autocompleteOptions);
+    console.log('initializeApp: Office address autocomplete initialized');
+  }catch(e){console.error('initializeApp: Office autocomplete ERROR:', e.message);}
 
   // Note: Add more autocomplete fields here for job address inputs when needed
   var jobAddrs=document.querySelectorAll('input[id*="addr"]');
+  console.log('initializeApp: Found '+jobAddrs.length+' address input fields');
   jobAddrs.forEach(function(input){
-    if(input.id!=='f-office-addr') new google.maps.places.Autocomplete(input,autocompleteOptions);
+    if(input.id!=='f-office-addr'){
+      try{
+        new google.maps.places.Autocomplete(input,autocompleteOptions);
+        console.log('initializeApp: Autocomplete initialized for '+input.id);
+      }catch(e){console.error('initializeApp: Autocomplete ERROR for '+input.id+':', e.message);}
+    }
   });
 
   renderAll(); renderOffice();
