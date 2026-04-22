@@ -149,8 +149,13 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 <div class="app">
   <div class="sidebar">
     <div class="sidebar-header">
-      <h2>Pillar to Post dispatch</h2>
-      <p>St. Louis region — next day scheduling</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <div>
+          <h2>Pillar to Post dispatch</h2>
+          <p>St. Louis region — next day scheduling</p>
+        </div>
+        <button class="bicon" onclick="resetApiKey()" title="Reset API key" style="flex-shrink:0;padding:6px;border-radius:6px;font-size:14px">⚙</button>
+      </div>
     </div>
     <div class="tab-bar">
       <button class="tab on" id="tb-inspectors" onclick="switchTab('inspectors')">Inspectors</button>
@@ -410,6 +415,15 @@ function saveApiKey(){
   googleApiKey=key;
   document.getElementById('api-key-modal').style.display='none';
   loadGoogleMaps();
+}
+
+function resetApiKey(){
+  localStorage.removeItem('google_api_key');
+  googleApiKey=null;
+  document.getElementById('api-key-input').value='';
+  document.getElementById('api-key-modal').style.display='flex';
+  document.getElementById('api-key-input').focus();
+}
 }
 
 function loadGoogleMaps(){
