@@ -193,7 +193,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
 
       <div class="tc" id="tc-jobs">
         <div class="section">
-          <div class="sec-title">Tomorrow's jobs</div>
+          <div class="sec-title">Tomorrow's jobs <button class="btn" onclick="sortJobsList()" style="width:auto;padding:2px 10px;font-size:11px;margin:0">Sort by window &amp; type</button></div>
           <div id="job-list"></div>
           <button class="btn" id="clear-jobs-btn" style="margin-bottom:8px;color:#b91c1c;border-color:#fca5a5;">Clear all jobs for next day</button>
           <div style="margin-top:4px">
@@ -1123,6 +1123,23 @@ function removeInsp(id){
 }
 function removeJob(id){ jobs=jobs.filter(function(j){return j.id!==id;}); save(); renderAll(); }
 
+function sortJobsList(){
+  // Sort display order: AM before PM, then within each window: Gas+Sewer > Gas > Sewer > Radon > Mold
+  function svcRank(j){
+    if(j.gas&&j.sewer) return 0;
+    if(j.gas)          return 1;
+    if(j.sewer)        return 2;
+    if(j.radon)        return 3;
+    if(j.mold)         return 4;
+    return 5;
+  }
+  jobs.sort(function(a,b){
+    if(a.window!==b.window) return a.window==='AM'?-1:1;
+    return svcRank(a)-svcRank(b);
+  });
+  save(); renderJobList(); setStatus('Jobs sorted by window and type.');
+}
+
 function startEditI(id){editIId=id;editJId=null;renderInspList();}
 function cancelEditI(){editIId=null;renderInspList();}
 function saveEditI(id){
@@ -1472,18 +1489,24 @@ function runAssignment(){
     });
   }
 
-  var amJobs=sortJobsForAssignment(jobs.filter(function(j){return j.window==='AM';}));
-  var pmJobs=sortJobsForAssignment(jobs.filter(function(j){return j.window==='PM';}));
+  var allSorted=sortJobsForAssignment(jobs);
 
-  // Interleave AM and PM: assign one from each window alternately so PM jobs don't
-  // preload inspectors with PM work before AM is distributed (which was causing John
-  // to show a heavy full-day score by the time AM sewers were being assigned)
-  var sortedJobs=[];
-  var maxLen=Math.max(amJobs.length, pmJobs.length);
+  // Phase 1: all Gas+Sewer combos across both windows (heaviest, most constrained)
+  // Phase 2: all single-service jobs interleaved AM/PM so neither window preloads inspectors
+  //          before the other window has had a chance to distribute work
+  var combos=allSorted.filter(function(j){return j.gas&&j.sewer;});
+  var amSingles=allSorted.filter(function(j){return !(j.gas&&j.sewer)&&j.window==='AM';});
+  var pmSingles=allSorted.filter(function(j){return !(j.gas&&j.sewer)&&j.window==='PM';});
+
+  var sortedJobs=combos.slice();
+  var maxLen=Math.max(amSingles.length, pmSingles.length);
   for(var wi=0; wi<maxLen; wi++){
-    if(wi < amJobs.length) sortedJobs.push(amJobs[wi]);
-    if(wi < pmJobs.length) sortedJobs.push(pmJobs[wi]);
+    if(wi < amSingles.length) sortedJobs.push(amSingles[wi]);
+    if(wi < pmSingles.length) sortedJobs.push(pmSingles[wi]);
   }
+
+  // Reorder the jobs array to match so the Jobs tab display reflects assignment order
+  jobs=sortedJobs;
 
   sortedJobs.forEach(function(job){
     initServiceAssignments(job);
