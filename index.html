@@ -1363,39 +1363,52 @@ function balanceWorkloadWithSplits(){
 
       var lightInsp=inspectors.find(function(i){return i.id===light.inspId;});
 
-      // Option 1: Light inspector can do Sewer, overloaded can keep Gas
-      if(lightInsp.sewer && !lightInsp.gas){
-        job.serviceAssignments.sewer=light.inspId;
-        decisionLog.push({
-          address:job.display,
-          window:job.window,
-          decisions:[
-            {service:'Gas',inspector:overloaded.name,reason:'Keep with overloaded (lighter service)'},
-            {service:'Sewer',inspector:light.name,reason:'Move to light-loaded (qualified & lighter overall)'}
-          ],
-          notes:['⚖️ Split for balance: Sewer moved from '+overloaded.name+' to '+light.name]
-        });
-        moved=true;
-        totalMoves++;
-        console.log('  Split '+job.display+': Sewer → '+light.name);
-        return;
+      // Calculate which service to move for best balance
+      var gasMins=45;
+      var sewerMins=60;
+      var moveService=null;
+      var reason='';
+
+      // Calculate both scenarios and pick the one with better balance
+      var currentGap=overloaded.max-light.max;
+      var sewerGapAfterMove=Infinity, gasGapAfterMove=Infinity;
+
+      if(lightInsp.sewer){
+        var newOverloaded=overloaded.max-sewerMins;
+        var newLight=light.max+sewerMins;
+        sewerGapAfterMove=Math.abs(newOverloaded-newLight);
       }
 
-      // Option 2: Light inspector can do Gas, overloaded can keep Sewer
-      if(lightInsp.gas && !lightInsp.sewer){
-        job.serviceAssignments.gas=light.inspId;
+      if(lightInsp.gas){
+        var newOverloaded=overloaded.max-gasMins;
+        var newLight=light.max+gasMins;
+        gasGapAfterMove=Math.abs(newOverloaded-newLight);
+      }
+
+      // Pick the move that reduces gap more
+      if(sewerGapAfterMove<gasGapAfterMove){
+        moveService='sewer';
+        reason='Move Sewer (60m) for better balance';
+      }else if(gasGapAfterMove<Infinity){
+        moveService='gas';
+        reason='Move Gas (45m) for better balance';
+      }
+
+      if(moveService){
+        job.serviceAssignments[moveService]=light.inspId;
+        var otherService=moveService==='sewer'?'gas':'sewer';
         decisionLog.push({
           address:job.display,
           window:job.window,
           decisions:[
-            {service:'Gas',inspector:light.name,reason:'Move to light-loaded (qualified & lighter overall)'},
-            {service:'Sewer',inspector:overloaded.name,reason:'Keep with overloaded (lighter service)'}
+            {service:moveService.charAt(0).toUpperCase()+moveService.slice(1),inspector:light.name,reason:reason},
+            {service:otherService.charAt(0).toUpperCase()+otherService.slice(1),inspector:overloaded.name,reason:'Keep on current assignment'}
           ],
-          notes:['⚖️ Split for balance: Gas moved from '+overloaded.name+' to '+light.name]
+          notes:['⚖️ Split for balance: '+moveService.toUpperCase()+' moved from '+overloaded.name+' to '+light.name]
         });
         moved=true;
         totalMoves++;
-        console.log('  Split '+job.display+': Gas → '+light.name);
+        console.log('  Split '+job.display+': '+moveService.toUpperCase()+' → '+light.name);
         return;
       }
     });
