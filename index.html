@@ -353,7 +353,16 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6
   </div>
 </div>
 
-<!-- Google Maps API loaded dynamically after user provides key -->
+<!-- Assignment Logic Modal -->
+<div id="log-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:12px;width:90%;max-width:560px;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 4px 16px rgba(0,0,0,.2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #e5e5e5;flex-shrink:0;">
+      <div style="font-size:14px;font-weight:600;color:#111;">📋 Assignment Logic</div>
+      <button style="background:none;border:none;font-size:22px;cursor:pointer;color:#999;line-height:1;" onclick="closeLogModal()">×</button>
+    </div>
+    <div id="log-modal-body" style="overflow-y:auto;padding:16px;flex:1;font-size:12px;"></div>
+  </div>
+</div>
 <script>
 const COLORS = ['#1D9E75','#D85A30','#378ADD','#D4537E','#BA7517','#534AB7','#639922','#A32D2D'];
 const SVC = ['gas','sewer','radon','mold'];
@@ -1742,26 +1751,9 @@ function renderResults(){
   var offBanner=office?'<div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:6px 10px;font-size:11px;color:#854F0B;margin-bottom:8px;">Midday waypoint: '+escapeHtml(office.display)+'</div>':'';
   var html=offBanner;
 
-  // NEW: Decision Log section
+  // Assignment logic — button opens modal instead of inline block
   if(decisionLog.length){
-    html+='<div style="margin-bottom:16px;background:#f0f7ff;border:1px solid #bae6fd;border-radius:8px;padding:12px;">';
-    html+='<div style="font-weight:600;color:#0369a1;margin-bottom:10px;font-size:12px;">📋 Assignment Logic</div>';
-    decisionLog.forEach(function(entry){
-      html+='<div style="font-size:11px;margin-bottom:10px;padding:8px;background:white;border-radius:4px;border-left:3px solid #0ea5e9;">';
-      html+='<div style="font-weight:600;color:#111;margin-bottom:4px;">'+escapeHtml(entry.address)+' ('+entry.window+')</div>';
-      if(entry.notes.length){
-        entry.notes.forEach(function(note){
-          html+='<div style="margin-left:12px;margin-bottom:2px;color:#d97706;font-size:10px;">'+escapeHtml(note)+'</div>';
-        });
-      }
-      entry.decisions.forEach(function(dec){
-        html+='<div style="margin-left:12px;margin-bottom:3px;color:#555;">';
-        html+='<span style="font-weight:500">'+dec.service+':</span> '+escapeHtml(dec.inspector)+' — '+escapeHtml(dec.reason);
-        html+='</div>';
-      });
-      html+='</div>';
-    });
-    html+='</div>';
+    html+='<button class="btn" onclick="openLogModal()" style="margin-bottom:10px;font-size:12px;">📋 View assignment logic</button>';
   }
 
   // NEW: Display routes for each inspector
@@ -2029,9 +2021,37 @@ function openChangelogModal(){
 function closeChangelogModal(){
   document.getElementById('changelog-modal').style.display='none';
 }
+
+function openLogModal(){
+  var body=document.getElementById('log-modal-body');
+  var html='';
+  decisionLog.forEach(function(entry){
+    html+='<div style="margin-bottom:10px;padding:10px;background:#f8faff;border-radius:6px;border-left:3px solid #0ea5e9;">';
+    html+='<div style="font-weight:600;color:#111;margin-bottom:5px;">'+escapeHtml(entry.address)+'<span style="margin-left:6px;font-size:10px;font-weight:400;padding:1px 6px;border-radius:99px;background:'+(entry.window==='AM'?'#dbeafe':'#ede9fe')+';color:'+(entry.window==='AM'?'#1d4ed8':'#5b21b6')+'">'+entry.window+'</span></div>';
+    entry.notes.forEach(function(note){
+      html+='<div style="margin-bottom:4px;color:#d97706;font-size:11px;">'+escapeHtml(note)+'</div>';
+    });
+    entry.decisions.forEach(function(dec){
+      var insp=inspectors.find(function(i){return i.name===dec.inspector;});
+      var dot=insp?'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+insp.color+';margin-right:4px;vertical-align:middle;"></span>':'';
+      html+='<div style="margin-top:4px;color:#333;line-height:1.5;">';
+      html+='<span style="font-weight:600;">'+dec.service+':</span> '+dot+escapeHtml(dec.inspector);
+      if(dec.reason) html+='<div style="color:#888;font-size:11px;margin-left:12px;">'+escapeHtml(dec.reason)+'</div>';
+      html+='</div>';
+    });
+    html+='</div>';
+  });
+  body.innerHTML=html||'<div style="color:#aaa;text-align:center;padding:20px;">No assignment data yet.</div>';
+  document.getElementById('log-modal').style.display='flex';
+}
+function closeLogModal(){
+  document.getElementById('log-modal').style.display='none';
+}
 window.addEventListener('click', function(event){
   var modal=document.getElementById('changelog-modal');
   if(event.target===modal) modal.style.display='none';
+  var lmodal=document.getElementById('log-modal');
+  if(event.target===lmodal) lmodal.style.display='none';
 });
 </script>
 </body>
